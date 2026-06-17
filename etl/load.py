@@ -15,6 +15,24 @@ def client() -> Client:
     return create_client(settings.supabase_url, settings.supabase_service_role_key)
 
 
+def fetch_daily(sb: Client) -> pd.DataFrame:
+    """Load the full daily bar-sell history from Supabase (source of truth)."""
+    rows: list[dict] = []
+    page = 0
+    cols = "trade_date,bar_sell_open,bar_sell_high,bar_sell_low,bar_sell_close"
+    while True:
+        res = sb.table("gold_price_daily").select(cols).order("trade_date").range(page * 1000, page * 1000 + 999).execute()
+        rows.extend(res.data)
+        if len(res.data) < 1000:
+            break
+        page += 1
+    df = pd.DataFrame(rows)
+    df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
+    for c in ["bar_sell_open", "bar_sell_high", "bar_sell_low", "bar_sell_close"]:
+        df[c] = df[c].astype(float)
+    return df
+
+
 def upsert_tick(sb: Client, tick: GoldTick) -> None:
     sb.table("gold_price_ticks").upsert(
         {
