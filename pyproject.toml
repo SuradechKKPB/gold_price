@@ -1,0 +1,24 @@
+[project]
+name = "gold-thb-etl"
+version = "0.1.0"
+description = "Daily ETL + technical/fundamental analysis for timing the sale of THB gold"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "pandas>=2.2",
+    "supabase>=2.6",
+    "tenacity>=8.4",
+    "python-dateutil>=2.9",
+]
+
+[dependency-groups]
+dev = ["ruff>=0.5", "pytest>=8"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.uv]
+package = false

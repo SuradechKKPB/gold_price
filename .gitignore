@@ -1,0 +1,24 @@
+# secrets
+.env
+.env.*
+!.env.example
+*_token*.json
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.uv/
+.ruff_cache/
+.pytest_cache/
+
+# node / next
+node_modules/
+.next/
+dist/
+.vercel/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
