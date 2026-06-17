@@ -1,9 +1,10 @@
-"""Daily ETL orchestrator (resilient to GTA blocking datacenter IPs).
+"""Daily ETL orchestrator — safe by design.
 
-Flow: get today's live tick (GTA -> thaigold fallback). For the daily series, use
-the full GTA /ohlc when reachable; otherwise load history from Supabase and append
-today's row from the tick. Then compute indicators + the sell-pressure score,
-upsert the recent tail, and fire a LINE alert if the score crosses the threshold.
+Gets today's GTA tick + (optionally) the /ohlc history. GTA blocks datacenter IPs
+(e.g. GitHub Actions) with 403; there is no reliable free fresh fallback, so if the
+live price can't be fetched — or looks implausible vs the last stored close — the
+run SKIPS cleanly (no DB write, no LINE alert) instead of corrupting data or firing
+a false signal. History lives in Supabase; the nightly run only needs today's tick.
 """
 
 from __future__ import annotations
@@ -12,13 +13,12 @@ import pandas as pd
 
 from . import indicators, signals
 from .config import settings
-from .gta import GoldTick, fetch_ohlc, get_live_tick, ohlc_to_daily
+from .gta import GoldTick, fetch_latest, fetch_ohlc, ohlc_to_daily
+
+PLAUSIBLE_DEV = 0.12  # reject a tick deviating >12% from the last stored close
 
 
 def _merge_today(daily: pd.DataFrame, tick: GoldTick) -> pd.DataFrame:
-    """Ensure today's row reflects the latest tick (sell-out basis)."""
-    if not tick.bar_sell:
-        return daily
     d = pd.to_datetime(tick.as_time).date()
     close = float(tick.bar_sell)
     mask = daily["trade_date"] == d
@@ -33,24 +33,26 @@ def _merge_today(daily: pd.DataFrame, tick: GoldTick) -> pd.DataFrame:
     return daily.sort_values("trade_date").reset_index(drop=True)
 
 
+def _last_close(daily: pd.DataFrame, today) -> float | None:
+    prev = daily[daily["trade_date"] < today]
+    return float(prev.iloc[-1]["bar_sell_close"]) if len(prev) else None
+
+
 def main() -> None:
-    tick = get_live_tick()
+    tick = None
+    try:
+        tick = fetch_latest()
+    except Exception as exc:  # noqa: BLE001
+        print(f"GTA /Latest unreachable: {type(exc).__name__} (likely 403 from this host)")
 
     daily = None
     try:
         daily = ohlc_to_daily(fetch_ohlc())
-        source = "GTA /ohlc (full)"
     except Exception as exc:  # noqa: BLE001
-        source = f"GTA /ohlc unavailable ({type(exc).__name__})"
-
-    print(f"Tick: {tick.as_time} (round {tick.seq}) bar buy-in {tick.bar_buy:,.0f} · source: {source}")
+        print(f"GTA /ohlc unreachable: {type(exc).__name__}")
 
     if not settings.has_supabase:
-        if daily is not None:
-            ind = indicators.build(_merge_today(daily, tick), settings.bar_spread_thb)
-            latest = signals.compute_scores(ind).iloc[-1]
-            print(f"[dry] sell-pressure {latest['sell_pressure']:.0f}/100 -> {latest['verdict']}")
-        print("[no Supabase env] dry run only — nothing written.")
+        print(f"[dry] tick={'ok' if tick else 'none'} ohlc={'ok' if daily is not None else 'none'} — no Supabase env, nothing written.")
         return
 
     from . import alerts, load
@@ -58,9 +60,18 @@ def main() -> None:
     sb = load.client()
     if daily is None:
         daily = load.fetch_daily(sb)
-        source += " -> Supabase history"
-    daily = _merge_today(daily, tick)
 
+    if tick is None or not tick.bar_sell:
+        print("SKIPPED: no fresh price (GTA blocked from this host). No write, no alert.")
+        return
+
+    today = pd.to_datetime(tick.as_time).date()
+    last = _last_close(daily, today)
+    if last and abs(tick.bar_sell - last) / last > PLAUSIBLE_DEV:
+        print(f"SKIPPED: tick {tick.bar_sell:,.0f} deviates >{PLAUSIBLE_DEV:.0%} from last close {last:,.0f} — likely bad data. No write, no alert.")
+        return
+
+    daily = _merge_today(daily, tick)
     ind = indicators.build(daily, settings.bar_spread_thb)
     scores = signals.compute_scores(ind)
     latest = scores.iloc[-1]
@@ -70,10 +81,8 @@ def main() -> None:
     n_sig = signals.upsert_signals(sb, scores.tail(30))
     sent = alerts.maybe_alert(scores, tick)
 
-    print(f"source: {source}")
-    print(f"sell-pressure {latest['sell_pressure']:.0f}/100 -> {latest['verdict']}  ({latest['active_signals']})")
-    print(f"Upserted 1 tick, {n_daily} daily rows (tail), {n_sig} signal rows (tail).")
-    print("LINE alert sent." if sent else "No LINE alert (no threshold cross or token unset).")
+    print(f"OK: buy-in {tick.bar_buy:,.0f}; sell-pressure {latest['sell_pressure']:.0f}/100 -> {latest['verdict']}")
+    print(f"Upserted 1 tick, {n_daily} daily, {n_sig} signal rows. {'LINE alert sent.' if sent else 'No alert.'}")
 
 
 if __name__ == "__main__":

@@ -1,18 +1,16 @@
 """Gold Traders Association of Thailand (สมาคมค้าทองคำ) data client.
 
-GTA endpoints are free JSON but Cloudflare-fronted and block many datacenter IPs
-(e.g. GitHub Actions) with 403. So we send full browser headers and fall back to
-the thaigold.info mirror (plain host) for the live tick when GTA refuses.
+GTA endpoints are free JSON but Cloudflare-fronted and BLOCK many datacenter IPs
+(e.g. GitHub Actions) with 403, while residential/Thai IPs work. We send full
+browser headers to maximise success. There is no reliable free fresh fallback
+(thaigold.info serves stale cached values; global XAU/FX APIs also block from
+datacenters), so the orchestrator SKIPS safely when GTA is unreachable rather
+than writing bad data.
 
-We sell at the buy-in (bid). /ohlc is the bar sell-out history (used for the
-one-time backfill); the nightly job only needs today's tick — history lives in
-Supabase.
+We sell at the buy-in (bid). /ohlc is the bar sell-out history (one-time backfill).
 """
 
 from __future__ import annotations
-
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import httpx
 import pandas as pd
@@ -20,8 +18,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 BASE = "https://www.goldtraders.or.th/api/GoldPrices"
-THAIGOLD = "http://www.thaigold.info/RealTimeDataV2/gtdata_.json"
-BANGKOK = ZoneInfo("Asia/Bangkok")
 
 HEADERS = {
     "User-Agent": (
@@ -46,7 +42,7 @@ class GoldTick(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     gold_price_id: int = Field(default=0, alias="goldPriceID")
-    as_time: str = Field(alias="asTime")  # bangkok wall-clock, e.g. 2026-06-17T12:58:00
+    as_time: str = Field(alias="asTime")
     seq: int = Field(default=0, alias="seq")
     bar_buy: float | None = Field(default=None, alias="bL_BuyPrice")
     bar_sell: float | None = Field(default=None, alias="bL_SellPrice")
@@ -77,37 +73,6 @@ def fetch_ohlc() -> pd.DataFrame:
     return df
 
 
-def fetch_latest_thaigold() -> GoldTick:
-    """Fallback live tick from the thaigold.info mirror (no Cloudflare)."""
-    rows = _get(THAIGOLD)
-    by = {r.get("name"): r for r in rows}
-
-    def f(name: str, key: str) -> float | None:
-        try:
-            return float(str(by.get(name, {}).get(key, "")).replace(",", ""))
-        except (TypeError, ValueError):
-            return None
-
-    now = datetime.now(BANGKOK).replace(tzinfo=None).isoformat(timespec="seconds")
-    return GoldTick(
-        as_time=now,
-        bar_buy=f("96.5%", "bid"),     # bid = รับซื้อ (what we sell into)
-        bar_sell=f("96.5%", "ask"),    # ask = ขายออก
-        ornament_buy=f("สมาคมฯ", "bid"),
-        gold_spot_usd=f("GoldSpot", "bid"),
-        baht_per_usd=f("THB", "bid"),
-    )
-
-
-def get_live_tick() -> GoldTick:
-    """GTA /Latest, falling back to thaigold.info if GTA blocks (403 from datacenter IPs)."""
-    try:
-        return fetch_latest()
-    except Exception as exc:  # noqa: BLE001 - any failure -> try the mirror
-        print(f"GTA /Latest failed ({type(exc).__name__}: {exc}); falling back to thaigold.info")
-        return fetch_latest_thaigold()
-
-
 def ohlc_to_daily(df: pd.DataFrame) -> pd.DataFrame:
     """Reduce intraday bar-sell rows to one OHLC row per Bangkok calendar day."""
     df = df.copy()
@@ -122,9 +87,8 @@ def ohlc_to_daily(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _dry_run() -> None:
-    tick = get_live_tick()
-    print("LATEST:", tick.as_time, "round", tick.seq)
-    print(f"  bar buy-in {tick.bar_buy:,.0f}  sell-out {tick.bar_sell:,.0f}  spot ${tick.gold_spot_usd}  USDTHB {tick.baht_per_usd}")
+    tick = fetch_latest()
+    print("LATEST:", tick.as_time, "round", tick.seq, "bar buy-in", tick.bar_buy)
 
 
 if __name__ == "__main__":
