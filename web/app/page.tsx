@@ -99,6 +99,32 @@ export default async function Page() {
         </div>
       </section>
 
+      {/* Score explained */}
+      <section className="panel" style={{ padding: 24, marginTop: 20 }}>
+        <h2 className="serif" style={{ fontSize: 20, fontWeight: 500 }}>
+          อ่านคะแนนอย่างไร
+        </h2>
+        <div style={{ display: "grid", gap: 14, marginTop: 14 }}>
+          {[
+            { name: "คะแนนรวม", weight: "0–100", desc: "ภาพรวมแรงกดดันให้ขาย — เกณฑ์: ≥35 เริ่มลดพอร์ต · ≥45 ขายบางส่วน · ≥55 (พร้อมสัญญาณเบรกเทรนด์ ≥2 ตัว) ขายออก" },
+            { name: "เบรกเทรนด์", weight: "45%", desc: "ราคาหลุดโครงสร้างขาขึ้นหรือยัง — Chandelier stop รายสัปดาห์, จุดต่ำสุด 10/20 สัปดาห์, เดธครอส 50/200, หลุดเส้นค่าเฉลี่ย 200 วัน · สูง = เทรนด์กำลังพลิก เป็นสัญญาณที่เชื่อถือได้ที่สุดในตลาดขาขึ้น" },
+            { name: "ซื้อมากเกินไป", weight: "30%", desc: "รวมตัวชี้วัดที่บอกว่าราคา ‘ยืดเกิน’ — RSI รายสัปดาห์, ระยะห่างเหนือเส้น 200 วัน, Bollinger %B, ผลตอบแทน 1 ปี · สูง = เสี่ยงย่อ แต่ขาขึ้นแรงอาจค้างสูงได้นาน จึงใช้เป็นสัญญาณ ‘รัดสตอป’ มากกว่าขายทันที" },
+            { name: "โมเมนตัม", weight: "20%", desc: "ทิศทางโมเมนตัมรายสัปดาห์จาก MACD · สูง = โมเมนตัมเริ่มเป็นขาลง" },
+            { name: "ฤดูกาล", weight: "5%", desc: "รูปแบบราคาตามเดือนในอดีต (เช่น มิ.ย. มักอ่อนแรง) · น้ำหนักน้อยเพราะขึ้นกับสภาวะตลาด ไม่แน่นอน" },
+          ].map((s) => (
+            <div key={s.name} style={{ display: "flex", gap: 14, alignItems: "baseline" }}>
+              <div style={{ width: 116, flexShrink: 0 }}>
+                <span style={{ fontSize: 14 }}>{s.name}</span>{" "}
+                <span className="muted mono" style={{ fontSize: 11 }}>{s.weight}</span>
+              </div>
+              <p className="muted" style={{ fontSize: 13, lineHeight: 1.55, margin: 0 }}>
+                {s.desc}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* Price chart */}
       <section className="panel" style={{ padding: 24, marginTop: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>

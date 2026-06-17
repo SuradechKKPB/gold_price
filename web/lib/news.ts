@@ -1,8 +1,8 @@
 import "server-only";
 
 export interface NewsItem {
-  title: string;
-  url: string;
+  title: string; // Thai-translated headline
+  url: string; // original (English) source link
   source: string;
   date: string;
 }
@@ -15,28 +15,51 @@ export interface CalEvent {
 
 const REVALIDATE = 1800;
 
-/** Latest Thai-language gold news via Google News RSS (free, no key). */
+/** Free, keyless EN->TH translation via Google's gtx endpoint. Falls back to source text. */
+async function translateToThai(text: string): Promise<string> {
+  try {
+    const u =
+      "https://translate.googleapis.com/translate_a/single?" +
+      new URLSearchParams({ client: "gtx", sl: "en", tl: "th", dt: "t", q: text }).toString();
+    const res = await fetch(u, { next: { revalidate: REVALIDATE } });
+    const data = (await res.json()) as [Array<[string]>];
+    return data[0].map((seg) => seg[0]).join("");
+  } catch {
+    return text;
+  }
+}
+
+/** International gold news (English sources) with Thai-translated headlines; links stay English. */
 export async function fetchNews(): Promise<NewsItem[]> {
   try {
     const u =
       "https://news.google.com/rss/search?" +
-      new URLSearchParams({ q: "ราคาทองคำ", hl: "th", gl: "TH", ceid: "TH:th" }).toString();
+      new URLSearchParams({ q: "gold price", hl: "en-US", gl: "US", ceid: "US:en" }).toString();
     const res = await fetch(u, { next: { revalidate: REVALIDATE } });
     const xml = await res.text();
     const strip = (s: string) => s.replace(/<!\[CDATA\[|\]\]>/g, "").replace(/&amp;/g, "&").trim();
     const tag = (block: string, name: string) =>
       strip((block.match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)<\\/${name}>`)) ?? ["", ""])[1]);
 
-    return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)]
+    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)]
       .slice(0, 8)
       .map((m) => {
         const b = m[1];
         const source = tag(b, "source");
         let title = tag(b, "title");
         if (source && title.endsWith(` - ${source}`)) title = title.slice(0, -(source.length + 3));
-        return { title, url: tag(b, "link"), source, date: tag(b, "pubDate") };
+        return { titleEn: title, url: tag(b, "link"), source, date: tag(b, "pubDate") };
       })
-      .filter((n) => n.title && n.url);
+      .filter((n) => n.titleEn && n.url);
+
+    return Promise.all(
+      items.map(async (n) => ({
+        title: await translateToThai(n.titleEn),
+        url: n.url,
+        source: n.source,
+        date: n.date,
+      })),
+    );
   } catch {
     return [];
   }
