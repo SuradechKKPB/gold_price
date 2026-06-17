@@ -106,6 +106,7 @@ export function BacktestTable({ runs }: { runs: BacktestRun[] }) {
         <tr className="muted" style={{ textAlign: "right" }}>
           <th style={{ textAlign: "left", paddingBottom: 8 }}>กลยุทธ์</th>
           <th style={{ paddingBottom: 8 }}>จับยอด</th>
+          <th style={{ paddingBottom: 8 }}>OOS</th>
           <th style={{ paddingBottom: 8 }}>พลาด/บาททอง</th>
           <th style={{ paddingBottom: 8 }}>ชนะ DCA</th>
         </tr>
@@ -115,6 +116,9 @@ export function BacktestTable({ runs }: { runs: BacktestRun[] }) {
           <tr key={r.strategy} style={{ borderTop: "1px solid var(--border)" }}>
             <td style={{ textAlign: "left", padding: "7px 0" }}>{prettyStrategy(r.strategy)}</td>
             <td style={{ textAlign: "right" }}>{pct(r.median_capture_pct)}</td>
+            <td style={{ textAlign: "right" }}>
+              {r.params?.oos_capture_pct != null ? pct(r.params.oos_capture_pct) : "—"}
+            </td>
             <td style={{ textAlign: "right" }}>{r.median_regret_thb.toLocaleString()}</td>
             <td style={{ textAlign: "right" }}>
               {r.win_rate_vs_dca === null ? "—" : pct(r.win_rate_vs_dca)}

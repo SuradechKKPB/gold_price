@@ -30,4 +30,5 @@ export interface BacktestRun {
   median_capture_pct: number;
   median_regret_thb: number;
   win_rate_vs_dca: number | null;
+  params?: { oos_capture_pct?: number | null } | null;
 }

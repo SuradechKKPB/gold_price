@@ -43,7 +43,7 @@ export const getScoreHistory = () =>
 export async function getBacktest(horizonDays: number): Promise<BacktestRun[]> {
   const { data } = await supabase
     .from("backtest_runs")
-    .select("strategy,horizon_days,median_capture_pct,median_regret_thb,win_rate_vs_dca")
+    .select("strategy,horizon_days,median_capture_pct,median_regret_thb,win_rate_vs_dca,params")
     .eq("horizon_days", horizonDays)
     .order("median_capture_pct", { ascending: false });
   return (data as BacktestRun[]) ?? [];

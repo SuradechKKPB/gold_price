@@ -22,6 +22,7 @@ const SIGNAL_LABELS: Record<string, string> = {
 export default async function Page() {
   const grams = Number(process.env.GOLD_GRAMS ?? 700);
   const bw = bahtWeight(grams);
+  const showHolding = process.env.SHOW_HOLDING === "true"; // default: hide personal holding on the public page
 
   const [signal, tick, prices, runs, news, events] = await Promise.all([
     getLatestSignal(),
@@ -71,14 +72,29 @@ export default async function Page() {
       {/* Hero */}
       <section className="panel" style={{ padding: 28, marginTop: 28, display: "grid", gap: 28, gridTemplateColumns: "1.1fr 1fr" }}>
         <div>
-          <div className="muted" style={{ fontSize: 12, letterSpacing: 0.4 }}>
-            {grams} กรัม ({num(bw)} บาททอง) ที่ราคารับซื้อวันนี้
-          </div>
-          <div className="mono serif" style={{ fontSize: 44, marginTop: 8, color: "var(--gold)" }}>
-            ฿{thb(holdingValue)}
-          </div>
+          {showHolding ? (
+            <>
+              <div className="muted" style={{ fontSize: 12, letterSpacing: 0.4 }}>
+                {grams} กรัม ({num(bw)} บาททอง) ที่ราคารับซื้อวันนี้
+              </div>
+              <div className="mono serif" style={{ fontSize: 44, marginTop: 8, color: "var(--gold)" }}>
+                ฿{thb(holdingValue)}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="muted" style={{ fontSize: 12, letterSpacing: 0.4 }}>
+                ราคารับซื้อทองคำแท่ง 96.5% วันนี้
+              </div>
+              <div className="mono serif" style={{ fontSize: 44, marginTop: 8, color: "var(--gold)" }}>
+                ฿{thb(buyIn)}
+                <span className="muted" style={{ fontSize: 18 }}> /บาททอง</span>
+              </div>
+            </>
+          )}
           <div className="muted mono" style={{ fontSize: 13, marginTop: 6 }}>
-            รับซื้อ {thb(buyIn)} /บาททอง{tick ? ` · สปอต $${num(tick.gold_spot_usd)} · USDTHB ${num(tick.baht_per_usd)}` : ""}
+            {showHolding ? `รับซื้อ ${thb(buyIn)} /บาททอง` : "ราคาสมาคมค้าทองคำฯ"}
+            {tick ? ` · สปอต $${num(tick.gold_spot_usd)} · USDTHB ${num(tick.baht_per_usd)}` : ""}
           </div>
           {signal && (
             <div style={{ marginTop: 20, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -154,7 +170,10 @@ export default async function Page() {
           <b style={{ color: "var(--text)" }}>ถือไว้</b> ให้ผลดีที่สุด — และคะแนนรวมของเราเป็นกฎ <i>เชิงรุก</i> ที่ดีที่สุด
           เอาชนะการทยอยขายแบบ DCA ค่าเฉลี่ยดูเข้าข้างการถือ เพราะเทรนด์แทบไม่เคยพลิก คะแนนจะมีค่าจริงตอนที่เทรนด์กลับตัว
         </p>
-        <div style={{ marginTop: 16 }}>
+        <div className="muted mono" style={{ fontSize: 11, marginTop: 12 }}>
+          OOS = ทดสอบช่วงนอกตัวอย่าง (window เริ่มปี 2020) · กลยุทธ์ที่ทำได้ดีจริงควรชนะทั้งช่วงเต็มและ OOS
+        </div>
+        <div style={{ marginTop: 10 }}>
           <BacktestTable runs={runs} />
         </div>
         {dd.dropPct < 0 && (
