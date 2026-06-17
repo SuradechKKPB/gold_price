@@ -2,10 +2,10 @@ import type { BacktestRun, Verdict } from "@/lib/types";
 import { pct } from "@/lib/format";
 
 const VERDICT: Record<Verdict, { label: string; color: string }> = {
-  hold: { label: "HOLD", color: "var(--green)" },
-  trim: { label: "TRIM", color: "var(--amber)" },
-  sell_tranche: { label: "SELL A TRANCHE", color: "var(--orange)" },
-  sell: { label: "SELL", color: "var(--red)" },
+  hold: { label: "ถือไว้", color: "var(--green)" },
+  trim: { label: "ลดพอร์ตเล็กน้อย", color: "var(--amber)" },
+  sell_tranche: { label: "ขายบางส่วน", color: "var(--orange)" },
+  sell: { label: "ขายออก", color: "var(--red)" },
 };
 
 export function VerdictChip({ verdict }: { verdict: Verdict }) {
@@ -58,10 +58,10 @@ export function ScoreGauge({ score }: { score: number }) {
         ))}
       </div>
       <div className="muted mono" style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginTop: 6 }}>
-        <span>0 hold</span>
-        <span>trim 35</span>
-        <span>tranche 45</span>
-        <span>sell 55</span>
+        <span>0 ถือ</span>
+        <span>ลด 35</span>
+        <span>บางส่วน 45</span>
+        <span>ขาย 55</span>
         <span>100</span>
       </div>
     </div>
@@ -73,7 +73,7 @@ export function BucketBars({ buckets }: { buckets: { label: string; value: numbe
     <div style={{ display: "grid", gap: 10 }}>
       {buckets.map((b) => (
         <div key={b.label} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span className="muted" style={{ width: 96, fontSize: 13 }}>
+          <span className="muted" style={{ width: 110, fontSize: 13 }}>
             {b.label}
           </span>
           <div style={{ flex: 1, height: 6, background: "var(--panel2)", borderRadius: 4 }}>
@@ -88,28 +88,14 @@ export function BucketBars({ buckets }: { buckets: { label: string; value: numbe
   );
 }
 
-export function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <div>
-      <div className="muted" style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.6 }}>
-        {label}
-      </div>
-      <div className="mono" style={{ fontSize: 22, marginTop: 4 }}>
-        {value}
-      </div>
-      {sub && <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{sub}</div>}
-    </div>
-  );
-}
-
 function prettyStrategy(s: string): string {
-  if (s === "window_end") return "Hold to window-end";
-  if (s === "dca_out") return "DCA-out (baseline)";
-  if (s === "random_day") return "Random day";
+  if (s === "window_end") return "ถือจนครบกรอบ";
+  if (s === "dca_out") return "ทยอยขายเฉลี่ย (DCA)";
+  if (s === "random_day") return "สุ่มวันขาย";
   const trail = s.match(/^trail_(aao|ladder)_(\d+)$/);
-  if (trail) return `Trailing ${trail[2]}% ${trail[1] === "aao" ? "(all-at-once)" : "(laddered)"}`;
+  if (trail) return `Trailing ${trail[2]}% ${trail[1] === "aao" ? "(ขายทีเดียว)" : "(ขั้นบันได)"}`;
   const score = s.match(/^score_ge_(\d+)$/);
-  if (score) return `Score ≥ ${score[1]}`;
+  if (score) return `คะแนน ≥ ${score[1]}`;
   return s;
 }
 
@@ -118,10 +104,10 @@ export function BacktestTable({ runs }: { runs: BacktestRun[] }) {
     <table className="mono" style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
       <thead>
         <tr className="muted" style={{ textAlign: "right" }}>
-          <th style={{ textAlign: "left", paddingBottom: 8 }}>strategy</th>
-          <th style={{ paddingBottom: 8 }}>capture</th>
-          <th style={{ paddingBottom: 8 }}>regret/baht</th>
-          <th style={{ paddingBottom: 8 }}>beats DCA</th>
+          <th style={{ textAlign: "left", paddingBottom: 8 }}>กลยุทธ์</th>
+          <th style={{ paddingBottom: 8 }}>จับยอด</th>
+          <th style={{ paddingBottom: 8 }}>พลาด/บาททอง</th>
+          <th style={{ paddingBottom: 8 }}>ชนะ DCA</th>
         </tr>
       </thead>
       <tbody>

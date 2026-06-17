@@ -6,13 +6,13 @@ const serif = Fraunces({ subsets: ["latin"], variable: "--font-fraunces", displa
 const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", display: "swap" });
 
 export const metadata: Metadata = {
-  title: "Gold THB — Sell Timing",
-  description: "Technical + fundamental sell-timing for THB gold, backtested on 20 years.",
+  title: "ทองคำ — จังหวะขาย",
+  description: "วิเคราะห์เทคนิคและปัจจัยพื้นฐานเพื่อหาจังหวะขายทองคำ (บาท) ทดสอบย้อนหลัง 20 ปี",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="th">
       <body className={`${serif.variable} ${mono.variable}`}>{children}</body>
     </html>
   );
