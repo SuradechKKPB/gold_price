@@ -1,12 +1,14 @@
 """Daily ETL orchestrator.
 
-Phase 1 scope: capture the live GTA round and refresh the daily bar series.
-Later phases add: macro/fundamental pulls, indicators, sell-pressure signals,
-backtest refresh, and LINE alerts. Runs DB-less (prints) when Supabase env is absent.
+Phase 1-2: capture the live GTA round, refresh the daily bar series, compute the
+technical indicators and the 0-100 sell-pressure score. Later phases add
+fundamentals, the backtest refresh, and LINE alerts. Runs DB-less (prints) when
+Supabase env is absent.
 """
 
 from __future__ import annotations
 
+from . import indicators, signals
 from .config import settings
 from .gta import fetch_latest, fetch_ohlc, ohlc_to_daily
 
@@ -23,6 +25,15 @@ def main() -> None:
     print(f"  daily series: {len(daily):,} days "
           f"({daily['trade_date'].min()} -> {daily['trade_date'].max()})")
 
+    ind = indicators.build(daily, settings.bar_spread_thb)
+    scores = signals.compute_scores(ind)
+    latest = scores.iloc[-1]
+    print("\nSell-pressure score (latest):")
+    print(f"  composite     {latest['sell_pressure']:.0f}/100   ->  verdict: {latest['verdict'].upper()}")
+    print(f"  trend break   {latest['trend_break']:.0f}   overbought {latest['overbought']:.0f}"
+          f"   momentum {latest['momentum']:.0f}   seasonality {latest['seasonality']:.0f}")
+    print(f"  active        {latest['active_signals'] or '(none)'}")
+
     if not settings.has_supabase:
         print("\n[no Supabase env] dry run only — nothing written.")
         return
@@ -31,8 +42,9 @@ def main() -> None:
 
     sb = load.client()
     load.upsert_tick(sb, tick)
-    n = load.upsert_daily(sb, daily, settings.bar_spread_thb)
-    print(f"\nUpserted 1 tick and {n:,} daily rows to Supabase.")
+    n_daily = load.upsert_daily(sb, daily, settings.bar_spread_thb)
+    n_sig = signals.upsert_signals(sb, scores)
+    print(f"\nUpserted 1 tick, {n_daily:,} daily rows, {n_sig:,} signal rows to Supabase.")
 
 
 if __name__ == "__main__":
