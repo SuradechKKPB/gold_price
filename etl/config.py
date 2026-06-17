@@ -17,6 +17,8 @@ class Settings(BaseSettings):
 
     # Alerts
     line_channel_access_token: str = ""
+    alert_threshold: float = 55.0  # send a LINE alert when sell_pressure crosses up through this
+    dashboard_url: str = "https://gold-price-gamma.vercel.app"
 
     # Holding config — drives the headline THB figure and the backtest unit.
     gold_grams: float = 700.0

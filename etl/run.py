@@ -46,6 +46,11 @@ def main() -> None:
     n_sig = signals.upsert_signals(sb, scores)
     print(f"\nUpserted 1 tick, {n_daily:,} daily rows, {n_sig:,} signal rows to Supabase.")
 
+    from . import alerts
+
+    sent = alerts.maybe_alert(scores, tick)
+    print("LINE alert sent." if sent else "No LINE alert (no threshold cross or token unset).")
+
 
 if __name__ == "__main__":
     main()
