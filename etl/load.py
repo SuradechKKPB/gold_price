@@ -18,7 +18,7 @@ def client() -> Client:
 def upsert_tick(sb: Client, tick: GoldTick) -> None:
     sb.table("gold_price_ticks").upsert(
         {
-            "as_time": tick.as_time,
+            "as_time": f"{tick.as_time}+07:00",  # gta asTime is bangkok wall-clock
             "seq": tick.seq,
             "bar_buy": tick.bar_buy,
             "bar_sell": tick.bar_sell,
