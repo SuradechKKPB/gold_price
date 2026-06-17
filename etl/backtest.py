@@ -6,8 +6,10 @@ window range captured, regret vs the window high) — not Sharpe. The signal rul
 (trailing-stop-from-peak) is pitted against the benchmarks that matter, above all
 DCA-OUT. Results are written to backtest_runs / backtest_windows.
 
-Honesty: overlapping windows are heavily autocorrelated, so aggregate CIs are
-wide and we also report an out-of-sample split. Full CPCV is a later hardening step.
+Rigor: overlapping windows are heavily autocorrelated, so beyond full-sample
+medians we report (a) an out-of-sample holdout (window starts >= 2020) and
+(b) an embargoed k-fold capture (purged CV) to gauge stability across regimes.
+Both are stored in backtest_runs.params and printed.
 """
 
 from __future__ import annotations
@@ -22,14 +24,15 @@ from .config import settings
 HORIZONS = {"3m": 63, "6m": 126, "9m": 189, "12m": 252}
 TRAIL_X = [0.03, 0.05, 0.08, 0.10]
 SCORE_T = [45, 50, 55, 60]
-STEP = 3            # sample window starts every N trading days (power vs runtime)
+STEP = 3                              # sample window starts every N trading days
+OOS_START = pd.Timestamp("2020-01-01")  # out-of-sample holdout boundary
 _NS = uuid.UUID("00000000-0000-0000-0000-00000000ba5e")
 
 
 # ----- strategies: each returns the realized (avg) sell price for one window seg -----
 
 def s_random(seg: np.ndarray) -> float:
-    return float(seg.mean())                       # expectation of a uniform sell day
+    return float(seg.mean())
 
 
 def s_end(seg: np.ndarray) -> float:
@@ -59,9 +62,9 @@ def s_trail_ladder(seg: np.ndarray, x: float, n: int = 4) -> float:
     for t, v in enumerate(seg):
         peak = max(peak, v)
         if nxt < n:
-            if v <= peak * (1 - x):           # accelerate on stop
+            if v <= peak * (1 - x):
                 sold.append(v); nxt += 1; peak = v
-            elif t >= sched[nxt]:             # scheduled tranche
+            elif t >= sched[nxt]:
                 sold.append(v); nxt += 1
     while nxt < n:
         sold.append(seg[-1]); nxt += 1
@@ -129,6 +132,31 @@ def _agg(w: pd.DataFrame, dca_sell: pd.Series | None) -> dict:
     return d
 
 
+def _oos_capture(w: pd.DataFrame) -> float | None:
+    oos = w[w["window_start"] >= OOS_START]
+    return round(float(oos["capture_pct"].median()), 4) if len(oos) else None
+
+
+def _cv_capture(w: pd.DataFrame, horizon_days: int, k: int = 5) -> dict | None:
+    """Embargoed k-fold (purged CV): median capture per contiguous time block, with the
+    overlap-length tail of each block dropped so adjacent folds don't leak."""
+    w = w.sort_values("window_start").reset_index(drop=True)
+    n = len(w)
+    if n < k * 3:
+        return None
+    emb = max(1, horizon_days // STEP)
+    caps = []
+    for i in range(k):
+        lo = int(n * i / k)
+        hi = int(n * (i + 1) / k)
+        fold = w.iloc[lo : max(lo + 1, hi - emb)]
+        if len(fold):
+            caps.append(float(fold["capture_pct"].median()))
+    if not caps:
+        return None
+    return {"cv_mean": round(float(np.mean(caps)), 4), "cv_std": round(float(np.std(caps)), 4)}
+
+
 def run_backtest(sb) -> dict:
     df = load_series(sb)
     price = df["bar_buy_close"].values
@@ -141,7 +169,6 @@ def run_backtest(sb) -> dict:
     summary: dict = {}
 
     for hname, L in HORIZONS.items():
-        # benchmark windows
         w_dca = _eval(price, score, dates, L, lambda s, sc: s_dca(s))
         dca_sell = w_dca["sell_price"]
         configs: dict[str, pd.DataFrame] = {
@@ -156,15 +183,24 @@ def run_backtest(sb) -> dict:
             configs[f"score_ge_{t}"] = _eval(price, score, dates, L, lambda s, sc, t=t: s_score(s, sc, t))
 
         for name, w in configs.items():
-            strat = name.rsplit("_", 1)[0] if name[-1].isdigit() else name
             param = name.split("_")[-1] if name[-1].isdigit() else None
             agg = _agg(w, None if name == "dca_out" else dca_sell)
+            params: dict = {}
+            if "trail" in name:
+                params["x_pct"] = param
+            elif "score" in name:
+                params["t"] = param
+            params["oos_capture_pct"] = _oos_capture(w)
+            if "trail_ladder" in name or "score" in name:
+                cv = _cv_capture(w, L)
+                if cv:
+                    params.update(cv)
             rid = uuid.uuid5(_NS, f"{name}|{hname}")
             runs.append(
                 {
                     "id": str(rid),
                     "strategy": name,
-                    "params": {"x_pct": param} if "trail" in name else ({"t": param} if "score" in name else {}),
+                    "params": params,
                     "horizon_days": L,
                     "start_date": str(dates[0].date()),
                     "end_date": str(dates[-1].date()),
@@ -176,25 +212,26 @@ def run_backtest(sb) -> dict:
                 }
             )
 
-        # calibrate (capture the high = max median realized THB)
+        # calibrate on full sample (capture the high = max median realized THB)
         best_aao = max(TRAIL_X, key=lambda x: configs[f"trail_aao_{int(x*100)}"]["sell_price"].median())
         best_lad = max(TRAIL_X, key=lambda x: configs[f"trail_ladder_{int(x*100)}"]["sell_price"].median())
         best_t = max(SCORE_T, key=lambda t: configs[f"score_ge_{t}"]["sell_price"].median())
+        lad_w = configs[f"trail_ladder_{int(best_lad*100)}"]
+        score_w = configs[f"score_ge_{best_t}"]
 
         summary[hname] = {
             "dca": configs["dca_out"]["sell_price"].median() * bw,
-            "aao": (best_aao, configs[f"trail_aao_{int(best_aao*100)}"]["sell_price"].median() * bw,
-                    configs[f"trail_aao_{int(best_aao*100)}"]["regret_thb"].median() * bw),
-            "ladder": (best_lad, configs[f"trail_ladder_{int(best_lad*100)}"]["sell_price"].median() * bw,
-                       configs[f"trail_ladder_{int(best_lad*100)}"]["regret_thb"].median() * bw,
-                       _agg(configs[f"trail_ladder_{int(best_lad*100)}"], dca_sell)["win_rate_vs_dca"]),
+            "aao": (best_aao, configs[f"trail_aao_{int(best_aao*100)}"]["sell_price"].median() * bw),
+            "ladder": (best_lad, lad_w["sell_price"].median() * bw, _agg(lad_w, dca_sell)["win_rate_vs_dca"]),
             "score_t": best_t,
+            "is_capture": round(float(score_w["capture_pct"].median()), 4),
+            "oos_capture": _oos_capture(score_w),
+            "cv": _cv_capture(score_w, L),
         }
 
         # store per-window detail for the recommended laddered config at this horizon
-        rec = configs[f"trail_ladder_{int(best_lad*100)}"]
         rid = uuid.uuid5(_NS, f"trail_ladder_{int(best_lad*100)}|{hname}")
-        for r in rec.itertuples(index=False):
+        for r in lad_w.itertuples(index=False):
             win_store.append(
                 {
                     "run_id": str(rid),
@@ -209,7 +246,6 @@ def run_backtest(sb) -> dict:
                 }
             )
 
-    # write (idempotent: deterministic ids)
     for i in range(0, len(runs), 500):
         sb.table("backtest_runs").upsert(runs[i : i + 500], on_conflict="id").execute()
     for i in range(0, len(win_store), 1000):
@@ -225,18 +261,18 @@ def main() -> None:
     sb = load.client()
     s = run_backtest(sb)
     bw = settings.baht_weight
-    print(f"Backtest holding = {settings.gold_grams:g} g ({bw:.2f} baht-weight). Median realized THB for the full holding:\n")
-    print(f"{'horizon':>8} | {'DCA-out':>12} | {'trail aao':>20} | {'laddered (recommended)':>30}")
-    print("-" * 80)
+    print(f"Backtest holding = {settings.gold_grams:g} g ({bw:.2f} baht-weight).\n")
+    print(f"{'horizon':>8} | {'DCA-out THB':>13} | {'laddered THB (x, beat DCA)':>30} | {'score-rule capture IS / OOS / cv':>34}")
+    print("-" * 98)
     for h in HORIZONS:
         d = s[h]
-        aao_x, aao_thb, _ = d["aao"]
-        lx, lthb, lreg, lwin = d["ladder"]
-        print(f"{h:>8} | {d['dca']:>12,.0f} | {f'{aao_thb:,.0f} (x={int(aao_x*100)}%)':>20} | "
-              f"{f'{lthb:,.0f} (x={int(lx*100)}%, beat DCA {lwin*100:.0f}%)':>30}")
-    print(f"\nCalibrated composite score sell-threshold (capture-the-high): "
-          f"{ {h: s[h]['score_t'] for h in HORIZONS} }")
-    print(f"Wrote {s['_counts']['runs']} runs, {s['_counts']['windows']} windows.")
+        lx, lthb, lwin = d["ladder"]
+        cv = d["cv"]
+        cv_s = f"{cv['cv_mean']*100:.0f}±{cv['cv_std']*100:.0f}%" if cv else "n/a"
+        oos = f"{d['oos_capture']*100:.0f}%" if d["oos_capture"] is not None else "n/a"
+        print(f"{h:>8} | {d['dca']:>13,.0f} | {f'{lthb:,.0f} (x={int(lx*100)}%, {lwin*100:.0f}%)':>30} | "
+              f"{f'T={d['score_t']}: {d['is_capture']*100:.0f}% / {oos} / {cv_s}':>34}")
+    print(f"\nWrote {s['_counts']['runs']} runs, {s['_counts']['windows']} windows. (OOS = window starts >= 2020)")
 
 
 if __name__ == "__main__":
