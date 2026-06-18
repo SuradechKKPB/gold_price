@@ -3,9 +3,10 @@ import { BacktestTable, BucketBars, ScoreGauge, VerdictChip } from "@/components
 import { drawdown, sma } from "@/lib/indicators";
 import { bahtWeight, bangkokDate, calDate, newsDate, num, pct, thb } from "@/lib/format";
 import { fetchCalendar, fetchNews } from "@/lib/news";
+import { fetchRealtimeGold } from "@/lib/realtime";
 import { getBacktest, getLatestSignal, getLatestTick, getPriceHistory } from "@/lib/queries";
 
-export const revalidate = 1800;
+export const revalidate = 60;
 
 const SIGNAL_LABELS: Record<string, string> = {
   below_chandelier: "หลุด Chandelier stop รายสัปดาห์",
@@ -24,17 +25,21 @@ export default async function Page() {
   const bw = bahtWeight(grams);
   const showHolding = process.env.SHOW_HOLDING === "true"; // default: hide personal holding on the public page
 
-  const [signal, tick, prices, runs, news, events] = await Promise.all([
+  const [signal, tick, prices, runs, news, events, realtime] = await Promise.all([
     getLatestSignal(),
     getLatestTick(),
     getPriceHistory(),
     getBacktest(252),
     fetchNews(),
     fetchCalendar(),
+    fetchRealtimeGold(),
   ]);
 
   const buyIn = tick?.bar_buy ?? prices.at(-1)?.bar_buy_close ?? 0;
   const holdingValue = bw * buyIn;
+  const rtTime = realtime?.asOf
+    ? new Date(realtime.asOf).toLocaleTimeString("th-TH", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit" })
+    : "";
 
   const priceSeries = prices.map((r) => ({ time: r.trade_date, value: r.bar_buy_close }));
   const ma200 = sma(prices, 200);
@@ -72,29 +77,19 @@ export default async function Page() {
       {/* Hero */}
       <section className="panel" style={{ padding: 28, marginTop: 28, display: "grid", gap: 28, gridTemplateColumns: "1.1fr 1fr" }}>
         <div>
-          {showHolding ? (
-            <>
-              <div className="muted" style={{ fontSize: 12, letterSpacing: 0.4 }}>
-                {grams} กรัม ({num(bw)} บาททอง) ที่ราคารับซื้อวันนี้
-              </div>
-              <div className="mono serif" style={{ fontSize: 44, marginTop: 8, color: "var(--gold)" }}>
-                ฿{thb(holdingValue)}
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="muted" style={{ fontSize: 12, letterSpacing: 0.4 }}>
-                ราคารับซื้อทองคำแท่ง 96.5% วันนี้
-              </div>
-              <div className="mono serif" style={{ fontSize: 44, marginTop: 8, color: "var(--gold)" }}>
-                ฿{thb(buyIn)}
-                <span className="muted" style={{ fontSize: 18 }}> /บาททอง</span>
-              </div>
-            </>
-          )}
+          <div className="muted" style={{ fontSize: 12, letterSpacing: 0.4 }}>
+            ทองสากล · real-time{rtTime ? ` · ${rtTime}` : ""}
+          </div>
+          <div className="mono serif" style={{ fontSize: 44, marginTop: 8, color: "var(--gold)" }}>
+            ฿{thb(realtime ? realtime.thbBar : buyIn)}
+            <span className="muted" style={{ fontSize: 18 }}> /บาททอง</span>
+          </div>
           <div className="muted mono" style={{ fontSize: 13, marginTop: 6 }}>
-            {showHolding ? `รับซื้อ ${thb(buyIn)} /บาททอง` : "ราคาสมาคมค้าทองคำฯ"}
-            {tick ? ` · สปอต $${num(tick.gold_spot_usd)} · USDTHB ${num(tick.baht_per_usd)}` : ""}
+            {realtime ? `XAU $${num(realtime.xauUsd)}/oz · USDTHB ${num(realtime.usdThb)}` : "ราคาสมาคมค้าทองคำฯ"}
+          </div>
+          <div className="muted mono" style={{ fontSize: 13, marginTop: 4 }}>
+            รับซื้อร้านทอง (ขายได้จริง): {thb(buyIn)} /บาททอง
+            {showHolding ? ` · ${grams} ก. ≈ ฿${thb(holdingValue)}` : ""}
           </div>
           {signal && (
             <div style={{ marginTop: 20, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
