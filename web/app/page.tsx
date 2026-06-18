@@ -88,7 +88,7 @@ export default async function Page() {
             {realtime ? `XAU $${num(realtime.xauUsd)}/oz · USDTHB ${num(realtime.usdThb)}` : "ราคาสมาคมค้าทองคำฯ"}
           </div>
           <div className="muted mono" style={{ fontSize: 13, marginTop: 4 }}>
-            รับซื้อร้านทอง (ขายได้จริง): {thb(buyIn)} /บาททอง
+            ราคาสมาคมฯ (ขายได้จริง): {thb(buyIn)} /บาททอง
             {showHolding ? ` · ${grams} ก. ≈ ฿${thb(holdingValue)}` : ""}
           </div>
           {signal && (
