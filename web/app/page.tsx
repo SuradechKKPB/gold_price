@@ -117,25 +117,33 @@ export default async function Page() {
         </h2>
         <p className="muted" style={{ fontSize: 13, marginTop: 6, lineHeight: 1.55 }}>
           คำนวณบนกราฟ <b style={{ color: "var(--text)" }}>รายสัปดาห์</b> · 0 = ถือ, 100 = แรงกดดันขายสูงสุด · ถ่วงน้ำหนักไปทาง “เบรกเทรนด์”
-          เพราะสัญญาณ overbought มักหลอกในตลาดขาขึ้น · คะแนนคำนวณใหม่จากราคาล่าสุดทุกวัน
+          เพราะสัญญาณ overbought มักหลอกในตลาดขาขึ้น{signal ? ` · ตัวเลขด้านล่าง = ค่าจริงวันที่ ${signal.trade_date}` : ""}
         </p>
         <div style={{ display: "grid", gap: 16, marginTop: 14 }}>
           {[
-            { name: "คะแนนรวม", weight: "0–100", desc: "ภาพรวมแรงกดดันให้ขาย — เกณฑ์: ≥35 เริ่มลดพอร์ต · ≥45 ขายบางส่วน · ≥55 (พร้อมสัญญาณเบรกเทรนด์ ≥2 ตัว) ขายออก",
-              formula: "= 0.45×เบรกเทรนด์ + 0.30×ซื้อมากเกินไป + 0.20×โมเมนตัม + 0.05×ฤดูกาล" },
-            { name: "เบรกเทรนด์", weight: "45%", desc: "ราคาหลุดโครงสร้างขาขึ้นหรือยัง — Chandelier stop รายสัปดาห์, จุดต่ำสุด 10/20 สัปดาห์, เดธครอส 50/200, หลุดเส้นค่าเฉลี่ย 200 วัน · สูง = เทรนด์กำลังพลิก เป็นสัญญาณที่เชื่อถือได้ที่สุดในตลาดขาขึ้น",
-              formula: "= (จำนวนสัญญาณที่ติด ÷ 5) × 100  [<Chandelier(22,3)wk · <ต่ำสุด10wk · <ต่ำสุด20wk · deathcross 50/200 · <200DMA]" },
-            { name: "ซื้อมากเกินไป", weight: "30%", desc: "รวมตัวชี้วัดที่บอกว่าราคา ‘ยืดเกิน’ — RSI รายสัปดาห์, ระยะห่างเหนือเส้น 200 วัน, Bollinger %B, ผลตอบแทน 1 ปี · สูง = เสี่ยงย่อ แต่ขาขึ้นแรงอาจค้างสูงได้นาน จึงใช้เป็นสัญญาณ ‘รัดสตอป’ มากกว่าขายทันที",
+            { name: "คะแนนรวม", weight: "0–100", cur: signal?.sell_pressure, desc: "ภาพรวมแรงกดดันให้ขาย — เกณฑ์: ≥35 เริ่มลดพอร์ต · ≥45 ขายบางส่วน · ≥55 (พร้อมสัญญาณเบรกเทรนด์ ≥2 ตัว) ขายออก",
+              formula: signal
+                ? `= 0.45×${signal.trend_break.toFixed(0)} + 0.30×${signal.overbought.toFixed(0)} + 0.20×${signal.momentum.toFixed(0)} + 0.05×${signal.seasonality.toFixed(0)} = ${signal.sell_pressure.toFixed(0)}`
+                : "= 0.45×เบรกเทรนด์ + 0.30×ซื้อมากเกินไป + 0.20×โมเมนตัม + 0.05×ฤดูกาล" },
+            { name: "เบรกเทรนด์", weight: "45%", cur: signal?.trend_break, desc: "ราคาหลุดโครงสร้างขาขึ้นหรือยัง — Chandelier stop รายสัปดาห์, จุดต่ำสุด 10/20 สัปดาห์, เดธครอส 50/200, หลุดเส้นค่าเฉลี่ย 200 วัน · สูง = เทรนด์กำลังพลิก เป็นสัญญาณที่เชื่อถือได้ที่สุดในตลาดขาขึ้น",
+              formula: `= (จำนวนสัญญาณที่ติด ÷ 5) × 100${signal != null ? `  → ติด ${Math.round(signal.trend_break / 20)}/5` : ""}  [<Chandelier(22,3)wk · <ต่ำสุด10wk · <ต่ำสุด20wk · deathcross 50/200 · <200DMA]` },
+            { name: "ซื้อมากเกินไป", weight: "30%", cur: signal?.overbought, desc: "รวมตัวชี้วัดที่บอกว่าราคา ‘ยืดเกิน’ — RSI รายสัปดาห์, ระยะห่างเหนือเส้น 200 วัน, Bollinger %B, ผลตอบแทน 1 ปี · สูง = เสี่ยงย่อ แต่ขาขึ้นแรงอาจค้างสูงได้นาน จึงใช้เป็นสัญญาณ ‘รัดสตอป’ มากกว่าขายทันที",
               formula: "= ค่าเฉลี่ย(clip 0–100): %เหนือ200DMA÷26% · (RSI14wk−50)÷30 · (%B−0.5)÷0.5 · ROC252วัน÷50%" },
-            { name: "โมเมนตัม", weight: "20%", desc: "ทิศทางโมเมนตัมรายสัปดาห์จาก MACD · สูง = โมเมนตัมเริ่มเป็นขาลง",
+            { name: "โมเมนตัม", weight: "20%", cur: signal?.momentum, desc: "ทิศทางโมเมนตัมรายสัปดาห์จาก MACD · สูง = โมเมนตัมเริ่มเป็นขาลง",
               formula: "= (MACDwk < signal ? 50 : 0) + (histogram < 0 ? 50 : 0)" },
-            { name: "ฤดูกาล", weight: "5%", desc: "รูปแบบราคาตามเดือนในอดีต (เช่น มิ.ย. มักอ่อนแรง) · น้ำหนักน้อยเพราะขึ้นกับสภาวะตลาด ไม่แน่นอน",
+            { name: "ฤดูกาล", weight: "5%", cur: signal?.seasonality, desc: "รูปแบบราคาตามเดือนในอดีต (เช่น มิ.ย. มักอ่อนแรง) · น้ำหนักน้อยเพราะขึ้นกับสภาวะตลาด ไม่แน่นอน",
               formula: "= map(ผลตอบแทนเฉลี่ยรายเดือนย้อนหลัง) → เดือนอ่อนแรง = คะแนนสูง" },
           ].map((s) => (
-            <div key={s.name} style={{ display: "flex", gap: 14, alignItems: "baseline" }}>
+            <div key={s.name} style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
               <div style={{ width: 116, flexShrink: 0 }}>
-                <span style={{ fontSize: 14 }}>{s.name}</span>{" "}
-                <span className="muted mono" style={{ fontSize: 11 }}>{s.weight}</span>
+                <div>
+                  <span style={{ fontSize: 14 }}>{s.name}</span>{" "}
+                  <span className="muted mono" style={{ fontSize: 11 }}>{s.weight}</span>
+                </div>
+                <div className="mono" style={{ fontSize: 18, color: "var(--gold)", marginTop: 2 }}>
+                  {s.cur != null ? s.cur.toFixed(0) : "—"}
+                  <span className="muted" style={{ fontSize: 11 }}>/100</span>
+                </div>
               </div>
               <div>
                 <p className="muted" style={{ fontSize: 13, lineHeight: 1.55, margin: 0 }}>
