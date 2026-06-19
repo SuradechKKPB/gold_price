@@ -1,15 +1,19 @@
-name: daily-etl
+name: compute-signals
 
-# Nightly refresh after the US session (05:00 Asia/Bangkok = 22:00 UTC).
+# GTA blocks GitHub's datacenter IPs (403), so the live price fetch runs on the
+# phone (joe-health phone_sync.py) and writes to Supabase. This job is COMPUTE-ONLY:
+# it recomputes the sell-pressure score from the prices already in Supabase — no GTA
+# call — so it runs reliably on GitHub and keeps the dashboard score fresh.
+# Runs every 6h to pick up the phone's daily price write.
 on:
   schedule:
-    - cron: "0 22 * * *"
+    - cron: "0 */6 * * *"
   workflow_dispatch: {}
 
 jobs:
-  etl:
+  compute:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -21,10 +25,8 @@ jobs:
       - name: Sync dependencies
         run: uv sync
 
-      - name: Run ETL
+      - name: Recompute signals from Supabase
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-        run: uv run python -m etl.run
+        run: uv run python -m etl.compute
