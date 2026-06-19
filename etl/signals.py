@@ -56,8 +56,11 @@ def compute_scores(ind: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     ).mean(axis=1)
 
-    # --- momentum rollover (weekly MACD) ---
-    momentum = (ind["macd_w"] < ind["macd_sig_w"]).astype(float) * 50 + (ind["macd_hist_w"] < 0).astype(float) * 50
+    # --- momentum rollover (weekly MACD): two INDEPENDENT reads, each 0/50 ---
+    # below the signal line (turning down) + below the zero line (confirmed bear territory).
+    # (Previously the 2nd term used hist<0, which equals macd<signal — redundant, so momentum
+    # was only ever 0 or 100. Using the zero-line makes it graded: 0 / 50 / 100.)
+    momentum = (ind["macd_w"] < ind["macd_sig_w"]).astype(float) * 50 + (ind["macd_w"] < 0).astype(float) * 50
 
     seasonality = _seasonality(c)
 
