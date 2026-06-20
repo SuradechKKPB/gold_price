@@ -1,5 +1,7 @@
 import type { BacktestRun, Verdict } from "@/lib/types";
-import { pct } from "@/lib/format";
+import type { Indicator, KeyLevel, State } from "@/lib/ta";
+import type { TruthPost } from "@/lib/trump";
+import { newsDate, pct, thb } from "@/lib/format";
 
 const VERDICT: Record<Verdict, { label: string; color: string }> = {
   hold: { label: "ถือไว้", color: "var(--green)" },
@@ -127,5 +129,70 @@ export function BacktestTable({ runs }: { runs: BacktestRun[] }) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+const STATE: Record<State, { color: string; label: string }> = {
+  bear: { color: "var(--red)", label: "ขาลง / กดดันขาย" },
+  warn: { color: "var(--orange)", label: "เตือน" },
+  neutral: { color: "var(--muted)", label: "กลาง" },
+  bull: { color: "var(--green)", label: "ขาขึ้น" },
+};
+
+export function IndicatorsTable({ indicators }: { indicators: Indicator[] }) {
+  return (
+    <div style={{ display: "grid", gap: 0 }}>
+      {indicators.map((x) => (
+        <div
+          key={x.name}
+          style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, borderTop: "1px solid var(--border)", padding: "10px 0" }}
+        >
+          <div>
+            <div style={{ fontSize: 14 }}>{x.name}</div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{x.note}</div>
+          </div>
+          <div style={{ textAlign: "right", flexShrink: 0 }}>
+            <div className="mono" style={{ fontSize: 14 }}>{x.value}</div>
+            <span className="mono" style={{ fontSize: 11, color: STATE[x.state].color }}>{STATE[x.state].label}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function KeyLevels({ levels }: { levels: KeyLevel[] }) {
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      {levels.map((lv) => (
+        <div key={lv.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+          <span style={{ fontSize: 13 }}>{lv.name}</span>
+          <span className="mono" style={{ fontSize: 13, flexShrink: 0 }}>
+            {thb(lv.level)}{" "}
+            <span style={{ color: Math.abs(lv.distPct) < 3 ? "var(--orange)" : "var(--muted)" }}>
+              ({lv.distPct >= 0 ? "+" : ""}{lv.distPct.toFixed(1)}%)
+            </span>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function TruthFeed({ posts }: { posts: TruthPost[] }) {
+  if (!posts.length) {
+    return <div className="muted" style={{ fontSize: 13 }}>ไม่มีโพสต์ที่เกี่ยวกับตลาดในช่วงนี้</div>;
+  }
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      {posts.map((p, i) => (
+        <a key={i} href={p.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--text)", textDecoration: "none", display: "block" }}>
+          <div style={{ fontSize: 13.5, lineHeight: 1.5 }}>{p.text}</div>
+          <div className="muted mono" style={{ fontSize: 11, marginTop: 3 }}>
+            Truth Social{p.date ? ` · ${newsDate(p.date)}` : ""}
+          </div>
+        </a>
+      ))}
+    </div>
   );
 }

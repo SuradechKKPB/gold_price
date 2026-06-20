@@ -93,7 +93,11 @@ def load_series(sb) -> pd.DataFrame:
     score = pd.DataFrame(_fetch_all(sb, "signals_daily", "trade_date,sell_pressure", "trade_date"))
     df = price.merge(score, on="trade_date", how="left")
     df["trade_date"] = pd.to_datetime(df["trade_date"])
-    return df.set_index("trade_date").astype({"bar_buy_close": float, "sell_pressure": float})
+    df = df.set_index("trade_date").astype({"bar_buy_close": float, "sell_pressure": float})
+    # trim to the first valid score so the score-rule isn't blended with sell-at-window-end
+    # during the indicator warm-up (where score is NaN and s_score falls through to seg[-1]).
+    first = df["sell_pressure"].first_valid_index()
+    return df.loc[first:] if first is not None else df
 
 
 # ----- evaluation -----

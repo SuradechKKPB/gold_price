@@ -35,7 +35,7 @@ export async function getLatestTick(): Promise<TickRow | null> {
 }
 
 export const getPriceHistory = () =>
-  fetchAll<PriceRow>("gold_price_daily", "trade_date,bar_buy_close", "trade_date");
+  fetchAll<PriceRow>("gold_price_daily", "trade_date,bar_buy_close,bar_sell_high,bar_sell_low", "trade_date");
 
 export const getScoreHistory = () =>
   fetchAll<{ trade_date: string; sell_pressure: number }>("signals_daily", "trade_date,sell_pressure", "trade_date");

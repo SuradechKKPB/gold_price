@@ -78,6 +78,8 @@ def compute_scores(ind: pd.DataFrame) -> pd.DataFrame:
         & ind["sma200"].notna()
         & ind["rsi14_w"].notna()
         & ind["macd_sig_w"].notna()
+        & ind["roc252"].notna()   # ensure the overbought mean averages all 4 inputs, not fewer
+        & ind["pctb_w"].notna()
     )
 
     verdict = np.select(

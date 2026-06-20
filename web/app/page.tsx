@@ -1,6 +1,8 @@
 import PriceChart from "@/components/PriceChart";
-import { BacktestTable, BucketBars, ScoreGauge, VerdictChip } from "@/components/ui";
+import { BacktestTable, BucketBars, IndicatorsTable, KeyLevels, ScoreGauge, TruthFeed, VerdictChip } from "@/components/ui";
 import { drawdown, sma } from "@/lib/indicators";
+import { computeTA } from "@/lib/ta";
+import { fetchTrumpPosts } from "@/lib/trump";
 import { bahtWeight, bangkokDate, calDate, newsDate, num, pct, thb } from "@/lib/format";
 import { fetchCalendar, fetchNews } from "@/lib/news";
 import { fetchRealtimeGold } from "@/lib/realtime";
@@ -25,7 +27,7 @@ export default async function Page() {
   const bw = bahtWeight(grams);
   const showHolding = process.env.SHOW_HOLDING === "true"; // default: hide personal holding on the public page
 
-  const [signal, tick, prices, runs, news, events, realtime] = await Promise.all([
+  const [signal, tick, prices, runs, news, events, realtime, trump] = await Promise.all([
     getLatestSignal(),
     getLatestTick(),
     getPriceHistory(),
@@ -33,8 +35,10 @@ export default async function Page() {
     fetchNews(),
     fetchCalendar(),
     fetchRealtimeGold(),
+    fetchTrumpPosts(),
   ]);
 
+  const ta = computeTA(prices);
   const buyIn = tick?.bar_buy ?? prices.at(-1)?.bar_buy_close ?? 0;
   const holdingValue = bw * buyIn;
   const rtTime = realtime?.asOf
@@ -158,6 +162,28 @@ export default async function Page() {
         </div>
       </section>
 
+      {/* Technical indicators + key levels */}
+      <section className="panel" style={{ padding: 24, marginTop: 20 }}>
+        <h2 className="serif" style={{ fontSize: 20, fontWeight: 500 }}>
+          ตัวชี้วัดทางเทคนิค (รายวัน) + แนวราคาสำคัญ
+        </h2>
+        <p className="muted" style={{ fontSize: 13, marginTop: 6, lineHeight: 1.55 }}>
+          ตัวชี้วัดเสริมที่คำนวณใหม่ทุกวันจากราคาล่าสุด — เป็นบริบทประกอบ (คะแนน 0–100 ด้านบนคือสัญญาณหลักที่ทดสอบย้อนหลังแล้ว)
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 32, marginTop: 16 }}>
+          <div>
+            <div className="muted" style={{ fontSize: 12, letterSpacing: 0.4, marginBottom: 4 }}>ตัวชี้วัด</div>
+            <IndicatorsTable indicators={ta.indicators} />
+          </div>
+          <div>
+            <div className="muted" style={{ fontSize: 12, letterSpacing: 0.4, marginBottom: 12 }}>
+              แนวราคาสำคัญ (ระยะถึงจุดทริกเกอร์)
+            </div>
+            <KeyLevels levels={ta.levels} />
+          </div>
+        </div>
+      </section>
+
       {/* Price chart */}
       <section className="panel" style={{ padding: 24, marginTop: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -265,6 +291,19 @@ export default async function Page() {
               ))}
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* Trump on Truth Social */}
+      <section className="panel" style={{ padding: 24, marginTop: 20 }}>
+        <h2 className="serif" style={{ fontSize: 20, fontWeight: 500 }}>
+          Trump บน Truth Social — โพสต์ที่เกี่ยวกับตลาด
+        </h2>
+        <p className="muted" style={{ fontSize: 13, marginTop: 6, lineHeight: 1.55 }}>
+          โพสต์ของทรัมป์ขยับราคาทองผ่าน Fed / ภาษี / ดอลลาร์ · กรองเฉพาะที่เกี่ยวกับเศรษฐกิจ-การเงิน · อัปเดตทุกวัน
+        </p>
+        <div style={{ marginTop: 16 }}>
+          <TruthFeed posts={trump} />
         </div>
       </section>
 

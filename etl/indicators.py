@@ -76,8 +76,10 @@ def build(daily: pd.DataFrame, spread_thb: float) -> pd.DataFrame:
     wk["donchian_low_20w"] = w["low"].rolling(20).min()
 
     bb_mid = w["close"].rolling(20).mean()
-    bb_sd = w["close"].rolling(20).std()
-    wk["pctb_w"] = (w["close"] - (bb_mid - 2 * bb_sd)) / (4 * bb_sd)
+    bb_sd = w["close"].rolling(20).std(ddof=0)  # population std = classic Bollinger
+    pctb = (w["close"] - (bb_mid - 2 * bb_sd)) / (4 * bb_sd)
+    pctb[bb_sd == 0] = 0.5  # flat 20-week window -> mid-band (avoid inf/NaN into overbought)
+    wk["pctb_w"] = pctb
 
     out = out.join(wk.reindex(out.index, method="ffill"))
     return out

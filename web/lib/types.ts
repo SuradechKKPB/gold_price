@@ -14,6 +14,8 @@ export interface SignalRow {
 export interface PriceRow {
   trade_date: string;
   bar_buy_close: number;
+  bar_sell_high: number;
+  bar_sell_low: number;
 }
 
 export interface TickRow {
