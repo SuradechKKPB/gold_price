@@ -1,6 +1,7 @@
 import type { BacktestRun, Verdict } from "@/lib/types";
 import type { Indicator, KeyLevel, State } from "@/lib/ta";
 import type { TruthPost } from "@/lib/trump";
+import { type DxyBand, bandOf } from "@/lib/dxy";
 import { newsDate, pct, thb } from "@/lib/format";
 
 const VERDICT: Record<Verdict, { label: string; color: string }> = {
@@ -40,7 +41,7 @@ export function ScoreGauge({ score }: { score: number }) {
   return (
     <div>
       <div className="mono" style={{ fontSize: 56, lineHeight: 1, color: zoneColor(score) }}>
-        {score.toFixed(0)}
+        {(score ?? 0).toFixed(0)}
         <span className="muted" style={{ fontSize: 18 }}>
           /100
         </span>
@@ -82,7 +83,7 @@ export function BucketBars({ buckets }: { buckets: { label: string; value: numbe
             <div style={{ width: `${b.value}%`, height: "100%", background: "var(--gold)", borderRadius: 4 }} />
           </div>
           <span className="mono" style={{ width: 32, textAlign: "right", fontSize: 13 }}>
-            {b.value.toFixed(0)}
+            {(b.value ?? 0).toFixed(0)}
           </span>
         </div>
       ))}
@@ -170,11 +171,54 @@ export function KeyLevels({ levels }: { levels: KeyLevel[] }) {
           <span className="mono" style={{ fontSize: 13, flexShrink: 0 }}>
             {thb(lv.level)}{" "}
             <span style={{ color: Math.abs(lv.distPct) < 3 ? "var(--orange)" : "var(--muted)" }}>
-              ({lv.distPct >= 0 ? "+" : ""}{lv.distPct.toFixed(1)}%)
+              ({lv.distPct >= 0 ? "+" : ""}{(lv.distPct ?? 0).toFixed(1)}%)
             </span>
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+export function DxyPanel({ table, current }: { table: DxyBand[]; current: number | null }) {
+  const cur = current != null ? bandOf(current) : null;
+  return (
+    <div>
+      {current != null && (
+        <div className="mono" style={{ fontSize: 13, marginBottom: 14 }}>
+          DXY ตอนนี้{" "}
+          <span style={{ color: "var(--gold)", fontSize: 20 }}>{current.toFixed(1)}</span> · อยู่ในช่วง <b>{cur}</b>
+        </div>
+      )}
+      <table className="mono" style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr className="muted" style={{ textAlign: "right" }}>
+            <th style={{ textAlign: "left", paddingBottom: 8 }}>ช่วง DXY</th>
+            <th style={{ paddingBottom: 8 }}>ผลตอบแทน 12ด.</th>
+            <th style={{ paddingBottom: 8 }}>ขาดทุนเฉลี่ย</th>
+            <th style={{ paddingBottom: 8 }}>ret/maxDD</th>
+            <th style={{ paddingBottom: 8 }}>%บวก</th>
+            <th style={{ paddingBottom: 8 }}>n</th>
+          </tr>
+        </thead>
+        <tbody>
+          {table.map((r) => {
+            const here = r.band === cur;
+            return (
+              <tr key={r.band} style={{ borderTop: "1px solid var(--border)", background: here ? "var(--panel2)" : "transparent" }}>
+                <td style={{ textAlign: "left", padding: "7px 6px", color: here ? "var(--gold)" : "var(--text)" }}>
+                  {r.band}{here ? " ←" : ""}
+                </td>
+                <td style={{ textAlign: "right" }}>+{r.avgRet}%</td>
+                <td style={{ textAlign: "right", color: "var(--red)" }}>{r.avgLoss}%</td>
+                <td style={{ textAlign: "right" }}>{r.retDD ?? "—"}</td>
+                <td style={{ textAlign: "right" }}>{r.posPct}%</td>
+                <td style={{ textAlign: "right", color: "var(--muted)" }}>{r.n}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

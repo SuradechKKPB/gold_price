@@ -14,7 +14,9 @@ import math
 import numpy as np
 import pandas as pd
 
-WEIGHTS = {"trend_break": 0.45, "overbought": 0.30, "momentum": 0.20, "seasonality": 0.05}
+from .dxy import DOLLAR_SELL, band_of
+
+WEIGHTS = {"trend_break": 0.40, "overbought": 0.25, "momentum": 0.18, "dollar": 0.12, "seasonality": 0.05}
 
 
 def _seasonality(close: pd.Series) -> pd.Series:
@@ -29,7 +31,7 @@ def _seasonality(close: pd.Series) -> pd.Series:
     return pd.Series(close.index.month, index=close.index).map(scale)
 
 
-def compute_scores(ind: pd.DataFrame) -> pd.DataFrame:
+def compute_scores(ind: pd.DataFrame, dxy: pd.Series | None = None) -> pd.DataFrame:
     c = ind["close"]
 
     # --- trend break (5 equally-weighted binary exits) ---
@@ -64,10 +66,18 @@ def compute_scores(ind: pd.DataFrame) -> pd.DataFrame:
 
     seasonality = _seasonality(c)
 
+    # --- dollar regime (macro): DXY band -> historical sell-pressure for THB gold ---
+    if dxy is not None and len(dxy):
+        dser = dxy.reindex(ind.index, method="ffill")
+        dollar = dser.map(lambda v: DOLLAR_SELL.get(band_of(v), 50.0) if pd.notna(v) else 50.0).astype(float)
+    else:
+        dollar = pd.Series(50.0, index=ind.index)
+
     composite = (
         WEIGHTS["trend_break"] * trend_break
         + WEIGHTS["overbought"] * overbought
         + WEIGHTS["momentum"] * momentum
+        + WEIGHTS["dollar"] * dollar
         + WEIGHTS["seasonality"] * seasonality
     )
 
@@ -106,6 +116,7 @@ def compute_scores(ind: pd.DataFrame) -> pd.DataFrame:
             "overbought": overbought.round(2),
             "momentum": momentum.round(2),
             "seasonality": seasonality.round(2),
+            "fa_score": dollar.round(2),
             "verdict": pd.Series(verdict, index=ind.index),
             "n_trend": n_trend,
             "active_signals": active,
@@ -131,6 +142,7 @@ def upsert_signals(sb, scores: pd.DataFrame) -> int:
                 "overbought": _clean(row["overbought"]),
                 "momentum": _clean(row["momentum"]),
                 "seasonality": _clean(row["seasonality"]),
+                "fa_score": _clean(row["fa_score"]),
                 "verdict": row["verdict"],
                 "active_signals": list(row["active_signals"]),
             }

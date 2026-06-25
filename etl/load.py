@@ -33,6 +33,22 @@ def fetch_daily(sb: Client) -> pd.DataFrame:
     return df
 
 
+def fetch_macro(sb: Client, series: str) -> pd.Series:
+    """Load a macro_daily series (e.g. 'dxy') as a date-indexed Series."""
+    rows: list[dict] = []
+    page = 0
+    while True:
+        res = sb.table("macro_daily").select("trade_date,value").eq("series", series).order("trade_date").range(page * 1000, page * 1000 + 999).execute()
+        rows.extend(res.data)
+        if len(res.data) < 1000:
+            break
+        page += 1
+    if not rows:
+        return pd.Series(dtype=float)
+    s = pd.Series({pd.to_datetime(r["trade_date"]): float(r["value"]) for r in rows})
+    return s.sort_index()
+
+
 def upsert_tick(sb: Client, tick: GoldTick) -> None:
     sb.table("gold_price_ticks").upsert(
         {

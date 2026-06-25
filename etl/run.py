@@ -73,7 +73,8 @@ def main() -> None:
 
     daily = _merge_today(daily, tick)
     ind = indicators.build(daily, settings.bar_spread_thb)
-    scores = signals.compute_scores(ind)
+    dxy = load.fetch_macro(sb, "dxy")
+    scores = signals.compute_scores(ind, dxy)
     latest = scores.iloc[-1]
 
     load.upsert_tick(sb, tick)

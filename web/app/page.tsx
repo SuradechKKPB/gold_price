@@ -1,5 +1,5 @@
 import PriceChart from "@/components/PriceChart";
-import { BacktestTable, BucketBars, IndicatorsTable, KeyLevels, ScoreGauge, TruthFeed, VerdictChip } from "@/components/ui";
+import { BacktestTable, BucketBars, DxyPanel, IndicatorsTable, KeyLevels, ScoreGauge, TruthFeed, VerdictChip } from "@/components/ui";
 import { drawdown, sma } from "@/lib/indicators";
 import { computeTA } from "@/lib/ta";
 import { fetchTrumpPosts } from "@/lib/trump";
@@ -7,6 +7,7 @@ import { bahtWeight, bangkokDate, calDate, newsDate, num, pct, thb } from "@/lib
 import { fetchCalendar, fetchNews } from "@/lib/news";
 import { fetchRealtimeGold } from "@/lib/realtime";
 import { getBacktest, getLatestSignal, getLatestTick, getPriceHistory } from "@/lib/queries";
+import { DXY_TABLE, fetchCurrentDxy } from "@/lib/dxy";
 
 export const revalidate = 60;
 
@@ -27,7 +28,7 @@ export default async function Page() {
   const bw = bahtWeight(grams);
   const showHolding = process.env.SHOW_HOLDING === "true"; // default: hide personal holding on the public page
 
-  const [signal, tick, prices, runs, news, events, realtime, trump] = await Promise.all([
+  const [signal, tick, prices, runs, news, events, realtime, trump, dxyNow] = await Promise.all([
     getLatestSignal(),
     getLatestTick(),
     getPriceHistory(),
@@ -36,6 +37,7 @@ export default async function Page() {
     fetchCalendar(),
     fetchRealtimeGold(),
     fetchTrumpPosts(),
+    fetchCurrentDxy(),
   ]);
 
   const ta = computeTA(prices);
@@ -54,6 +56,7 @@ export default async function Page() {
         { label: "เบรกเทรนด์", value: signal.trend_break },
         { label: "ซื้อมากเกินไป", value: signal.overbought },
         { label: "โมเมนตัม", value: signal.momentum },
+        { label: "ดอลลาร์ (DXY)", value: signal.fa_score },
         { label: "ฤดูกาล", value: signal.seasonality },
       ]
     : [];
@@ -127,14 +130,16 @@ export default async function Page() {
           {[
             { name: "คะแนนรวม", weight: "0–100", cur: signal?.sell_pressure, desc: "ภาพรวมแรงกดดันให้ขาย — เกณฑ์: ≥35 เริ่มลดพอร์ต · ≥45 ขายบางส่วน · ≥55 (พร้อมสัญญาณเบรกเทรนด์ ≥2 ตัว) ขายออก",
               formula: signal
-                ? `= 0.45×${signal.trend_break.toFixed(0)} + 0.30×${signal.overbought.toFixed(0)} + 0.20×${signal.momentum.toFixed(0)} + 0.05×${signal.seasonality.toFixed(0)} = ${signal.sell_pressure.toFixed(0)}`
-                : "= 0.45×เบรกเทรนด์ + 0.30×ซื้อมากเกินไป + 0.20×โมเมนตัม + 0.05×ฤดูกาล" },
-            { name: "เบรกเทรนด์", weight: "45%", cur: signal?.trend_break, desc: "ราคาหลุดโครงสร้างขาขึ้นหรือยัง — Chandelier stop รายสัปดาห์, จุดต่ำสุด 10/20 สัปดาห์, เดธครอส 50/200, หลุดเส้นค่าเฉลี่ย 200 วัน · สูง = เทรนด์กำลังพลิก เป็นสัญญาณที่เชื่อถือได้ที่สุดในตลาดขาขึ้น",
+                ? `= 0.40×${signal.trend_break.toFixed(0)} + 0.25×${signal.overbought.toFixed(0)} + 0.18×${signal.momentum.toFixed(0)} + 0.12×${signal.fa_score.toFixed(0)} + 0.05×${signal.seasonality.toFixed(0)} = ${signal.sell_pressure.toFixed(0)}`
+                : "= 0.40×เบรกเทรนด์ + 0.25×ซื้อมากเกินไป + 0.18×โมเมนตัม + 0.12×ดอลลาร์ + 0.05×ฤดูกาล" },
+            { name: "เบรกเทรนด์", weight: "40%", cur: signal?.trend_break, desc: "ราคาหลุดโครงสร้างขาขึ้นหรือยัง — Chandelier stop รายสัปดาห์, จุดต่ำสุด 10/20 สัปดาห์, เดธครอส 50/200, หลุดเส้นค่าเฉลี่ย 200 วัน · สูง = เทรนด์กำลังพลิก เป็นสัญญาณที่เชื่อถือได้ที่สุดในตลาดขาขึ้น",
               formula: `= (จำนวนสัญญาณที่ติด ÷ 5) × 100${signal != null ? `  → ติด ${Math.round(signal.trend_break / 20)}/5` : ""}  [<Chandelier(22,3)wk · <ต่ำสุด10wk · <ต่ำสุด20wk · deathcross 50/200 · <200DMA]` },
-            { name: "ซื้อมากเกินไป", weight: "30%", cur: signal?.overbought, desc: "รวมตัวชี้วัดที่บอกว่าราคา ‘ยืดเกิน’ — RSI รายสัปดาห์, ระยะห่างเหนือเส้น 200 วัน, Bollinger %B, ผลตอบแทน 1 ปี · สูง = เสี่ยงย่อ แต่ขาขึ้นแรงอาจค้างสูงได้นาน จึงใช้เป็นสัญญาณ ‘รัดสตอป’ มากกว่าขายทันที",
+            { name: "ซื้อมากเกินไป", weight: "25%", cur: signal?.overbought, desc: "รวมตัวชี้วัดที่บอกว่าราคา ‘ยืดเกิน’ — RSI รายสัปดาห์, ระยะห่างเหนือเส้น 200 วัน, Bollinger %B, ผลตอบแทน 1 ปี · สูง = เสี่ยงย่อ แต่ขาขึ้นแรงอาจค้างสูงได้นาน จึงใช้เป็นสัญญาณ ‘รัดสตอป’ มากกว่าขายทันที",
               formula: "= ค่าเฉลี่ย(clip 0–100): %เหนือ200DMA÷26% · (RSI14wk−50)÷30 · (%B−0.5)÷0.5 · ROC252วัน÷50%" },
-            { name: "โมเมนตัม", weight: "20%", cur: signal?.momentum, desc: "MACD รายสัปดาห์: ต่ำกว่าเส้น signal (+50) และต่ำกว่าเส้นศูนย์ (+50) · 50 = เริ่มเป็นขาลง, 100 = ขาลงเต็มตัว",
+            { name: "โมเมนตัม", weight: "18%", cur: signal?.momentum, desc: "MACD รายสัปดาห์: ต่ำกว่าเส้น signal (+50) และต่ำกว่าเส้นศูนย์ (+50) · 50 = เริ่มเป็นขาลง, 100 = ขาลงเต็มตัว",
               formula: "= (MACDwk < signal ? 50 : 0) + (MACDwk < 0 ? 50 : 0)" },
+            { name: "ดอลลาร์ (DXY)", weight: "12%", cur: signal?.fa_score, desc: "ระดับ Dollar Index บ่งทิศทางทองในบาท 12 เดือนข้างหน้า (สถิติย้อนหลัง) — DXY สูง = บาทอ่อน = หนุนทองไทย → กดดันขายต่ำ; DXY ต่ำ = กดดันขายสูง",
+              formula: "= map(ช่วง DXY → คะแนน): <80→70 · 80–90→58 · 90–100→45 · 100–110→18 · >110→15" },
             { name: "ฤดูกาล", weight: "5%", cur: signal?.seasonality, desc: "รูปแบบราคาตามเดือนในอดีต (เช่น มิ.ย. มักอ่อนแรง) · น้ำหนักน้อยเพราะขึ้นกับสภาวะตลาด ไม่แน่นอน",
               formula: "= map(ผลตอบแทนเฉลี่ยรายเดือนย้อนหลัง) → เดือนอ่อนแรง = คะแนนสูง" },
           ].map((s) => (
@@ -232,6 +237,20 @@ export default async function Page() {
             </p>
           </div>
         )}
+      </section>
+
+      {/* Dollar Index regime */}
+      <section className="panel" style={{ padding: 24, marginTop: 20 }}>
+        <h2 className="serif" style={{ fontSize: 20, fontWeight: 500 }}>
+          ดัชนีดอลลาร์ (DXY) → ผลตอบแทนทอง 12 เดือนข้างหน้า
+        </h2>
+        <p className="muted" style={{ fontSize: 13, marginTop: 6, lineHeight: 1.55 }}>
+          สถิติย้อนหลัง (ทองคำบาท 2006–2026): แบ่งตามระดับ DXY แล้วดูผลตอบแทนเฉลี่ย / ขาดทุนเฉลี่ย / ผลตอบแทนต่อ max drawdown ใน
+          12 เดือนถัดมา · ระดับปัจจุบันถูกนำมารวมในคะแนน (ส่วน “ดอลลาร์” 12%) · ⚠️ ช่วง &lt;80 และ &gt;110 ตัวอย่างน้อย เชื่อถือได้จำกัด
+        </p>
+        <div style={{ marginTop: 16 }}>
+          <DxyPanel table={DXY_TABLE} current={dxyNow} />
+        </div>
       </section>
 
       {/* News & key dates this week */}

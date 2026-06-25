@@ -7,6 +7,7 @@ export interface SignalRow {
   overbought: number;
   momentum: number;
   seasonality: number;
+  fa_score: number; // dollar-regime component (0-100)
   verdict: Verdict;
   active_signals: string[];
 }
