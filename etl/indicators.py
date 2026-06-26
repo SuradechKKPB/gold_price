@@ -48,6 +48,16 @@ def build(daily: pd.DataFrame, spread_thb: float) -> pd.DataFrame:
     out["below_200dma"] = c < sma200
     out["roc252"] = c.pct_change(252)              # annual momentum
 
+    # --- drawdown spine for the peak-aware trailing exit (capture-the-high) ---
+    # The score is a SELL-timing tool: it must peak near a recent high worth capturing,
+    # not deep in a decline. dd_from_high feeds a continuous, age-faded trailing-break in
+    # signals.py; below_40w_low is the slow, non-fading secular-bear backstop so a long
+    # grind down still sells instead of holding to the bottom.
+    LB = 40                                         # ~8 trading weeks: the "recent high worth capturing"
+    recent_high = c.rolling(LB, min_periods=20).max()
+    out["dd_from_high"] = ((recent_high - c) / recent_high).clip(lower=0)   # >= 0; 0 at a new high
+    out["below_40w_low"] = c < c.rolling(LB * 5).min().shift(1)
+
     # --- weekly-basis trend/momentum signals (W-FRI), ffilled to daily ---
     w = pd.DataFrame(
         {

@@ -23,7 +23,7 @@ from .config import settings
 
 HORIZONS = {"3m": 63, "6m": 126, "9m": 189, "12m": 252}
 TRAIL_X = [0.03, 0.05, 0.08, 0.10]
-SCORE_T = [45, 50, 55, 60]
+SCORE_T = [30, 35, 40, 45, 50, 55, 60]   # peak-aware score peaks lower (~p99 49) than the old count ramp
 STEP = 3                              # sample window starts every N trading days
 OOS_START = pd.Timestamp("2020-01-01")  # out-of-sample holdout boundary
 _NS = uuid.UUID("00000000-0000-0000-0000-00000000ba5e")
