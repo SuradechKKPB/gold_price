@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from . import indicators, signals
+from . import indicators, intl, signals
 from .config import settings
 from .gta import GoldTick, fetch_latest, fetch_ohlc, ohlc_to_daily
 
@@ -72,7 +72,14 @@ def main() -> None:
         return
 
     daily = _merge_today(daily, tick)
-    ind = indicators.build(daily, settings.bar_spread_thb)
+
+    # --- score basis = international (world gold in THB), not the association quote ---
+    # persist today's intl from the tick's spot/fx, then score on the world-price series.
+    if tick.gold_spot_usd and tick.baht_per_usd:
+        intl.upsert_today(sb, today, tick.gold_spot_usd, tick.baht_per_usd)
+    intl.topup_from_daily(sb)               # also catch any phone-written days
+    daily_intl = intl.load_intl_daily(sb)
+    ind = indicators.build(daily_intl, 0.0)
     dxy = load.fetch_macro(sb, "dxy")
     scores = signals.compute_scores(ind, dxy)
     latest = scores.iloc[-1]

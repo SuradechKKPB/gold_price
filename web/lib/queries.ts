@@ -37,6 +37,26 @@ export async function getLatestTick(): Promise<TickRow | null> {
 export const getPriceHistory = () =>
   fetchAll<PriceRow>("gold_price_daily", "trade_date,bar_buy_close,bar_sell_high,bar_sell_low", "trade_date");
 
+/** International (world) gold in THB — the score's price basis (macro_daily series).
+ *  A single daily value, mapped to the PriceRow shape (high=low=close) for the TA helpers. */
+export async function getIntlHistory(): Promise<PriceRow[]> {
+  const out: PriceRow[] = [];
+  const size = 1000;
+  for (let from = 0; ; from += size) {
+    const { data, error } = await supabase
+      .from("macro_daily")
+      .select("trade_date,value")
+      .eq("series", "gold_intl_thb")
+      .order("trade_date")
+      .range(from, from + size - 1);
+    if (error) throw error;
+    const rows = (data ?? []) as { trade_date: string; value: number }[];
+    for (const r of rows) out.push({ trade_date: r.trade_date, bar_buy_close: r.value, bar_sell_high: r.value, bar_sell_low: r.value });
+    if (rows.length < size) break;
+  }
+  return out;
+}
+
 export const getScoreHistory = () =>
   fetchAll<{ trade_date: string; sell_pressure: number }>("signals_daily", "trade_date,sell_pressure", "trade_date");
 

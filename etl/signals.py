@@ -24,10 +24,12 @@ TRAIL_BAND = 0.05   # breach saturates over the next 5% (3% -> 0, >=8% -> 1): co
 TRAIL_TAU = 20.0    # freshness half-life-ish in bars: a break fades as IT ages (~4 weeks)
 PROX_KNEE = 0.06    # overbought is "near the high" within this drawdown, damped beyond it
 
-# Verdict cut-offs, re-fit to the new (lower, smoother) composite distribution: the
-# peak-aware score tops out ~64 (p99 ~49) instead of the old count-based ramp to 100.
-# 'sell' aligns with the backtest's strongest-capture zone (T~50: 12m capture 69% IS /
-# 82% OOS) and still requires n_trend>=2 (a fresh break AND a confirmed bear).
+# Verdict cut-offs for the peak-aware composite. The price BASIS is the international
+# (world) gold price in THB, not the Thai association quote (see etl/intl.py + compute.py)
+# — so a purely local premium swing no longer moves the score. On that basis the score
+# tops ~66 (p99 ~52). T=50 MAXIMISES median realised THB over 20y (12m capture 65% IS /
+# 82% OOS, beats DCA 63%) and 'sell' still requires n_trend>=2 (fresh break AND confirmed
+# bear). Realised price stays the association bid — that is what Poom actually sells at.
 T_TRIM, T_TRANCHE, T_SELL = 33.0, 42.0, 50.0
 
 

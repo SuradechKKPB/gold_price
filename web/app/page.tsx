@@ -6,7 +6,7 @@ import { fetchTrumpPosts } from "@/lib/trump";
 import { bahtWeight, bangkokDate, calDate, newsDate, num, pct, thb } from "@/lib/format";
 import { fetchCalendar, fetchNews } from "@/lib/news";
 import { fetchRealtimeGold } from "@/lib/realtime";
-import { getBacktest, getLatestSignal, getLatestTick, getPriceHistory } from "@/lib/queries";
+import { getBacktest, getIntlHistory, getLatestSignal, getLatestTick, getPriceHistory } from "@/lib/queries";
 import { DXY_TABLE, fetchCurrentDxy } from "@/lib/dxy";
 
 export const revalidate = 60;
@@ -28,10 +28,11 @@ export default async function Page() {
   const bw = bahtWeight(grams);
   const showHolding = process.env.SHOW_HOLDING === "true"; // default: hide personal holding on the public page
 
-  const [signal, tick, prices, runs, news, events, realtime, trump, dxyNow] = await Promise.all([
+  const [signal, tick, prices, intlPrices, runs, news, events, realtime, trump, dxyNow] = await Promise.all([
     getLatestSignal(),
     getLatestTick(),
     getPriceHistory(),
+    getIntlHistory(),
     getBacktest(252),
     fetchNews(),
     fetchCalendar(),
@@ -40,16 +41,18 @@ export default async function Page() {
     fetchCurrentDxy(),
   ]);
 
-  const ta = computeTA(prices);
+  // Score + technical analysis run on the WORLD gold price in THB (intlPrices); the
+  // association bid (buyIn) stays the realized number Poom actually sells at.
+  const ta = computeTA(intlPrices, 0);
   const buyIn = tick?.bar_buy ?? prices.at(-1)?.bar_buy_close ?? 0;
   const holdingValue = bw * buyIn;
   const rtTime = realtime?.asOf
     ? new Date(realtime.asOf).toLocaleTimeString("th-TH", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit" })
     : "";
 
-  const priceSeries = prices.map((r) => ({ time: r.trade_date, value: r.bar_buy_close }));
-  const ma200 = sma(prices, 200);
-  const dd = drawdown(prices, "2011-01-01", "2014-12-31");
+  const priceSeries = intlPrices.map((r) => ({ time: r.trade_date, value: r.bar_buy_close }));
+  const ma200 = sma(intlPrices, 200);
+  const dd = drawdown(intlPrices, "2011-01-01", "2014-12-31");
 
   const buckets = signal
     ? [
@@ -111,6 +114,9 @@ export default async function Page() {
         </div>
         <div>
           {signal && <ScoreGauge score={signal.sell_pressure} />}
+          <div className="muted mono" style={{ fontSize: 11, marginTop: 6, textAlign: "right" }}>
+            ฐานคะแนน: ราคาทองสากล (THB)
+          </div>
           <div style={{ marginTop: 20 }}>
             <BucketBars buckets={buckets} />
           </div>
@@ -124,7 +130,8 @@ export default async function Page() {
         </h2>
         <p className="muted" style={{ fontSize: 13, marginTop: 6, lineHeight: 1.55 }}>
           0 = ถือ, 100 = แรงกดดันขายสูงสุด · ออกแบบให้ <b style={{ color: "var(--text)" }}>คะแนนพุ่งตอนราคาเพิ่งหลุดจากจุดสูงสุด</b> (จังหวะ ‘capture the high’)
-          แล้วค่อยๆ จางลงเมื่อราคาตกไปลึกและนานแล้ว — มีตัวยืนยันเทรนด์ขาลงระยะยาวกันพลาดกรณีตลาดหมีจริง{signal ? ` · ตัวเลขด้านล่าง = ค่าจริงวันที่ ${signal.trade_date}` : ""}
+          แล้วค่อยๆ จางลงเมื่อราคาตกไปลึกและนานแล้ว — มีตัวยืนยันเทรนด์ขาลงระยะยาวกันพลาดกรณีตลาดหมีจริง · คะแนนและตัวชี้วัดคิดจาก
+          <b style={{ color: "var(--text)" }}>ราคาทองสากลแปลงเป็นบาท</b> (XAU×USDTHB) ไม่ใช่ราคาสมาคม จึงไม่สะดุดเวลาพรีเมียมในประเทศแกว่ง — ส่วนราคาที่ขายได้จริงยังอิงราคารับซื้อสมาคมฯ{signal ? ` · ตัวเลขด้านล่าง = ค่าจริงวันที่ ${signal.trade_date}` : ""}
         </p>
         <div style={{ display: "grid", gap: 16, marginTop: 14 }}>
           {[
@@ -173,7 +180,7 @@ export default async function Page() {
           ตัวชี้วัดทางเทคนิค (รายวัน) + แนวราคาสำคัญ
         </h2>
         <p className="muted" style={{ fontSize: 13, marginTop: 6, lineHeight: 1.55 }}>
-          ตัวชี้วัดเสริมที่คำนวณใหม่ทุกวันจากราคาล่าสุด — เป็นบริบทประกอบ (คะแนน 0–100 ด้านบนคือสัญญาณหลักที่ทดสอบย้อนหลังแล้ว)
+          ตัวชี้วัดเสริมที่คำนวณใหม่ทุกวันจาก<b style={{ color: "var(--text)" }}>ราคาทองสากล</b> (ฐานเดียวกับคะแนน) — เป็นบริบทประกอบ (คะแนน 0–100 ด้านบนคือสัญญาณหลักที่ทดสอบย้อนหลังแล้ว)
         </p>
         <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 32, marginTop: 16 }}>
           <div>
@@ -193,10 +200,10 @@ export default async function Page() {
       <section className="panel" style={{ padding: 24, marginTop: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
           <h2 className="serif" style={{ fontSize: 20, fontWeight: 500 }}>
-            ราคารับซื้อทองคำแท่ง ปี 2006–ปัจจุบัน
+            ราคาทองสากล (เทียบเงินบาท) ปี 2006–ปัจจุบัน
           </h2>
           <span className="muted mono" style={{ fontSize: 12 }}>
-            เส้นทอง = ค่าเฉลี่ย 200 วัน
+            เส้นทอง = ค่าเฉลี่ย 200 วัน · ฐานคะแนน
           </span>
         </div>
         <div style={{ marginTop: 12 }}>
@@ -230,7 +237,7 @@ export default async function Page() {
               ข้อยกเว้น — ปี 2013
             </div>
             <p style={{ fontSize: 14, marginTop: 6, lineHeight: 1.6 }}>
-              ตั้งแต่ {bangkokDate(dd.peakDate).split(" ").slice(0, 3).join(" ")} ราคารับซื้อร่วงลง{" "}
+              ตั้งแต่ {bangkokDate(dd.peakDate).split(" ").slice(0, 3).join(" ")} ราคาทองสากลร่วงลง{" "}
               <b className="mono" style={{ color: "var(--red)" }}>{pct(dd.dropPct)}</b> มาที่{" "}
               {bangkokDate(dd.troughDate).split(" ").slice(0, 3).join(" ")} ({thb(dd.peak)} → {thb(dd.trough)} /บาททอง)
               นี่คือการกลับตัวของเทรนด์ที่เครื่องมือนี้มีไว้เพื่อจับ — ซึ่งค่าเฉลี่ยในตารางด้านบนมองข้ามไป
@@ -328,8 +335,8 @@ export default async function Page() {
 
       <footer className="muted" style={{ fontSize: 12, marginTop: 28, lineHeight: 1.6 }}>
         ใช้เพื่อประกอบการตัดสินใจ ไม่ใช่คำแนะนำการลงทุน · สัญญาณคำนวณจากข้อมูลในอดีตแบบ in-sample (ช่วงเวลาทับซ้อน
-        ความเชื่อมั่นจึงกว้าง) · ผลในอดีตไม่รับประกันอนาคต · ที่มาราคา: สมาคมค้าทองคำแห่งประเทศไทย · ข่าว: Google News ·
-        ปฏิทิน: ForexFactory
+        ความเชื่อมั่นจึงกว้าง) · ผลในอดีตไม่รับประกันอนาคต · ฐานคะแนน: ราคาทองสากล (LBMA × USD/THB จาก ECB) · ราคารับซื้อจริง:
+        สมาคมค้าทองคำแห่งประเทศไทย · ข่าว: Google News · ปฏิทิน: ForexFactory
       </footer>
     </main>
   );
