@@ -1,7 +1,9 @@
 // US Dollar Index (DXY) — conditional next-12-month THB-gold stats by DXY band.
-// Computed offline from reconstructed DXY (ECB FX) + GTA THB gold 2006–2026
-// (etl/dxy.py). The current DXY level is fetched live and folded into the score
-// (dollar-regime component). Tails (<80, >110) are thin — interpret with care.
+// Stats are from the PRE-2020 sample (etl/dxy.py, intl basis) to avoid look-ahead: a
+// strong dollar preceded the weakest forward gold returns, so sell-pressure is MONOTONE
+// INCREASING in the dollar. (The earlier full-sample table had it backwards — it learned
+// from 2020–26, where a high DXY coincided with a THB-gold melt-up, and pinned the
+// component low.) Tails (<80, >110) are thin — interpret with care. Matches DOLLAR_SELL.
 
 export interface DxyBand {
   band: string;
@@ -14,11 +16,11 @@ export interface DxyBand {
 }
 
 export const DXY_TABLE: DxyBand[] = [
-  { band: "<80", n: 47, avgRet: 6.3, avgLoss: -10.3, posPct: 68, retDD: 0.53, sell: 70 },
-  { band: "80–90", n: 60, avgRet: 8.2, avgLoss: -7.4, posPct: 57, retDD: 0.84, sell: 58 },
-  { band: "90–100", n: 81, avgRet: 8.9, avgLoss: -3.9, posPct: 68, retDD: 1.16, sell: 45 },
-  { band: "100–110", n: 40, avgRet: 23.6, avgLoss: -2.3, posPct: 90, retDD: 7.09, sell: 18 },
-  { band: ">110", n: 2, avgRet: 11.5, avgLoss: 0.0, posPct: 100, retDD: 8.21, sell: 15 },
+  { band: "<80", n: 47, avgRet: 7.5, avgLoss: -11.4, posPct: 70, retDD: 0.58, sell: 30 },
+  { band: "80–90", n: 61, avgRet: 7.5, avgLoss: -8.9, posPct: 57, retDD: 0.62, sell: 40 },
+  { band: "90–100", n: 42, avgRet: 3.0, avgLoss: -4.3, posPct: 48, retDD: 0.39, sell: 55 },
+  { band: "100–110", n: 6, avgRet: 0.3, avgLoss: -2.6, posPct: 33, retDD: 0.05, sell: 68 },
+  { band: ">110", n: 0, avgRet: 0, avgLoss: 0, posPct: 0, retDD: null, sell: 75 },
 ];
 
 export function bandOf(dxy: number): string {

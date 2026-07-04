@@ -96,14 +96,25 @@ def backfill(sb, start: str = "2006-01-01") -> int:
     return _upsert(sb, build_intl_thb(start), "lbma_x_frankfurter")
 
 
-def topup_from_daily(sb) -> int:
-    """Refresh recent days from the phone's goldSpot×bahtPerUSD in gold_price_daily.
+def topup_from_daily(sb, days: int = 21) -> int:
+    """Refresh the LAST `days` days from the phone's goldSpot×bahtPerUSD in gold_price_daily.
 
     No external call, so the GitHub compute-only cron stays self-sufficient. These rows
-    win over the backfill for the few most-recent days (same basis, just fresher)."""
+    win over the backfill for the most-recent days (same basis, just fresher).
+
+    BOUNDED on purpose: an earlier version upserted EVERY phone-written day, so each run
+    rewrote finalized LBMA-fix history rows with intraday phone snapshots — permanent
+    basis drift across the whole series. We now only touch the recent window; the deep
+    history stays on its authoritative LBMA×ECB backfill.
+
+    NOTE (finalization): a recent day's value is the latest intraday snapshot, not the
+    London PM fix. Re-running etl.intl.backfill from a residential IP overwrites the
+    window with the true fix once available."""
+    cutoff = (pd.Timestamp.today().normalize() - pd.Timedelta(days=days)).date().isoformat()
     rows = (
         sb.table("gold_price_daily")
         .select("trade_date,gold_spot_usd,baht_per_usd")
+        .gte("trade_date", cutoff)
         .not_.is_("gold_spot_usd", "null")
         .not_.is_("baht_per_usd", "null")
         .order("trade_date")

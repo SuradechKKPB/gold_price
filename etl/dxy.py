@@ -24,10 +24,20 @@ def band_of(dxy: float) -> str:
     return ">110"
 
 
-# Dollar-regime sell-pressure by band, derived from the conditional study (lower
-# risk-adjusted forward THB-gold return -> higher sell pressure). Low DXY bands had
-# the worst forward returns/ret-per-drawdown; high DXY bands the best (weak-baht tailwind).
-DOLLAR_SELL = {"<80": 70.0, "80–90": 58.0, "90–100": 45.0, "100–110": 18.0, ">110": 15.0}
+# Dollar-regime sell-pressure by band. MONOTONE INCREASING in the dollar: a strong/
+# rising USD is a headwind for gold, so a higher DXY leans toward selling.
+#
+# This REVERSES an earlier full-sample table (<80:70 ... 100–110:18) that had it
+# backwards — that table was fitted on 2006–2026 including the 2020–2026 window where
+# a high DXY *coincided* with a THB-gold melt-up, so it "learned" high-dollar = don't-
+# sell and pinned the fundamental sub-score at 18 straight through the rally (look-ahead:
+# the backtest then scored the very windows the table was fitted on). Re-running the
+# conditional study on PRE-2020 data only tells the opposite, economically sensible
+# story — DXY 100–110 preceded the weakest forward returns (avg +0.3%, 33% positive)
+# and <80 the best (+7.5%, 70% positive). The mapping below is anchored to that clean
+# pre-2020 ranking (thin above 100, so rounded to a defensible monotone prior, not
+# over-fitted to n=6). See dxy.study(gold, dxy, end='2020-01-01') to reproduce.
+DOLLAR_SELL = {"<80": 30.0, "80–90": 40.0, "90–100": 55.0, "100–110": 68.0, ">110": 75.0}
 
 
 def dollar_regime_score(dxy: float | None) -> float:
