@@ -16,6 +16,11 @@ import pandas as pd
 
 from .dxy import DOLLAR_SELL, band_of
 
+# Bump whenever ANY scoring formula/constant below changes. compute.py compares this
+# to the version last written to signals_daily and, on a mismatch, rewrites the ENTIRE
+# history (not just tail-30) so the backtest never calibrates on a mixed-formula series.
+SCORE_VERSION = 3
+
 WEIGHTS = {"trend_break": 0.40, "overbought": 0.25, "momentum": 0.18, "dollar": 0.12, "seasonality": 0.05}
 
 # Peak-aware trailing-exit knobs (calibrated against capture-the-high in backtest.py).
@@ -23,26 +28,86 @@ TRAIL_X = 0.03      # a break "opens" once price is 3% below its recent high
 TRAIL_BAND = 0.05   # breach saturates over the next 5% (3% -> 0, >=8% -> 1): continuous, no cliff
 TRAIL_TAU = 20.0    # freshness half-life-ish in bars: a break fades as IT ages (~4 weeks)
 PROX_KNEE = 0.06    # overbought is "near the high" within this drawdown, damped beyond it
+HYSTERESIS = 2.5    # verdict deadband (composite pts): sticky on the way down, no flip-flop
 
-# Verdict cut-offs for the peak-aware composite. The price BASIS is the international
-# (world) gold price in THB, not the Thai association quote (see etl/intl.py + compute.py)
-# — so a purely local premium swing no longer moves the score. On that basis the score
-# tops ~66 (p99 ~52). T=50 MAXIMISES median realised THB over 20y (12m capture 65% IS /
-# 82% OOS, beats DCA 63%) and 'sell' still requires n_trend>=2 (fresh break AND confirmed
-# bear). Realised price stays the association bid — that is what Poom actually sells at.
-T_TRIM, T_TRANCHE, T_SELL = 33.0, 42.0, 50.0
+# Verdict cut-offs for the peak-aware composite (price BASIS = international THB; see
+# etl/intl.py). Calibrated to the CLEAN score distribution (no look-ahead components):
+# trim ~p89, tranche ~p95, sell ~p99 (score max ~68). A laddered exit at these levels
+# fires on ~11% of days and 'sell' still requires n_trend>=2 (fresh break AND confirmed
+# bear). Honest caveat from the T+1, pre-2020-selected backtest: the timing edge over a
+# simple DCA-out is only ~52-56% of windows with a CI that brushes 50% — so this ladder
+# is a DCA backbone with signal acceleration, NOT a precise top-picker. Realised price is
+# the association bid (what Poom actually sells at); see backtest.py.
+T_TRIM, T_TRANCHE, T_SELL = 44.0, 52.0, 60.0
 
 
-def _seasonality(close: pd.Series) -> pd.Series:
-    """Data-driven month tilt: historically weak months -> higher sell pressure."""
-    monthly = close.resample("ME").last().pct_change()
-    by_month = monthly.groupby(monthly.index.month).mean()
-    span = by_month.max() - by_month.min()
-    if span <= 0:
-        scale = by_month * 0 + 50.0
-    else:
-        scale = (by_month.max() - by_month) / span * 100.0
-    return pd.Series(close.index.month, index=close.index).map(scale)
+def _seasonality(close: pd.Series, min_years: int = 3) -> pd.Series:
+    """Point-in-time month tilt: historically weak months -> higher sell pressure.
+
+    POINT-IN-TIME by construction: at any date the weak/strong ranking is estimated
+    ONLY from monthly returns realized up to that date (expanding), so a historical
+    score never 'knows' the future full-sample average of its calendar month — the
+    look-ahead that inflated every backtested score. Neutral (50) until a month has
+    >= min_years observations and at least two months qualify."""
+    import bisect
+
+    m = close.resample("ME").last().pct_change().dropna()
+    buckets: dict[int, list[float]] = {}
+    taus: list[pd.Timestamp] = []
+    vectors: list[dict[int, float]] = []
+    for tau, ret in m.items():
+        buckets.setdefault(tau.month, []).append(float(ret))
+        means = {mo: sum(v) / len(v) for mo, v in buckets.items() if len(v) >= min_years}
+        if len(means) >= 2:
+            lo, hi = min(means.values()), max(means.values())
+            span = hi - lo
+            scaled = {mo: (50.0 if span <= 0 else (hi - mu) / span * 100.0) for mo, mu in means.items()}
+        else:
+            scaled = {}
+        taus.append(tau)
+        vectors.append(scaled)
+
+    out = pd.Series(50.0, index=close.index)
+    for d in close.index:
+        i = bisect.bisect_right(taus, d) - 1  # latest month-end whose data is fully known by d
+        if i >= 0:
+            out.loc[d] = vectors[i].get(d.month, 50.0)
+    return out
+
+
+_TIER_NAME = ["hold", "trim", "sell_tranche", "sell"]
+
+
+def _hysteretic_verdict(composite: pd.Series, n_trend: pd.Series, margin: float = HYSTERESIS) -> np.ndarray:
+    """Map the composite to a verdict tier with a hysteresis deadband so day-to-day noise
+    around a threshold can't flip-flop the verdict (observed hold<->trim churn). A tier is
+    ENTERED when the composite crosses its threshold, but only EXITED when the composite
+    falls `margin` points back below it — sticky on the way down. 'sell' additionally
+    requires the n_trend>=2 gate, which is hard (dropping it steps straight to tranche)."""
+    thr = [T_TRIM, T_TRANCHE, T_SELL]  # thresholds to reach tiers 1,2,3
+    comp = composite.to_numpy()
+    gate = (n_trend.to_numpy() >= 2)
+    out = np.empty(len(comp), dtype=object)
+    cur = 0
+    for i in range(len(comp)):
+        x = comp[i]
+        # exit: step down while we're a margin below the current tier's entry threshold
+        while cur > 0 and x < thr[cur - 1] - margin:
+            cur -= 1
+        # 'sell' gate is a hard requirement, not a hysteresis band
+        if cur == 3 and not gate[i]:
+            cur = 2
+        # enter: raise to the highest tier whose entry condition holds now
+        enter = 0
+        if x >= thr[0]:
+            enter = 1
+        if x >= thr[1]:
+            enter = 2
+        if x >= thr[2] and gate[i]:
+            enter = 3
+        cur = max(cur, enter)
+        out[i] = _TIER_NAME[cur]
+    return out
 
 
 def compute_scores(
@@ -66,24 +131,37 @@ def compute_scores(
     # secular bear still sells instead of holding to the bottom.
     dd = ind["dd_from_high"]
     breach = ((dd - trail_x) / trail_band).clip(0, 1)          # continuous onset over a band -> no cliff
-    # break_age = consecutive bars since this breach first opened (the break's OWN age,
-    # resets whenever price recovers to breach==0). NOT bars-since-the-literal-high: that
-    # pins to the window edge on the rounded/plateau tops typical of THB gold, which would
-    # silence the signal at the exact moment it must be loud.
-    opened = (breach.to_numpy() > 0).astype(int)
-    age = np.zeros(len(opened))
+    # break_age fades an AGING break so the score is loudest on a FRESH roll-over near the
+    # high. The clock restarts on every fresh deterioration (breach rising vs the prior
+    # bar), not just when price fully recovers — so a SECOND leg down from a lower high
+    # (the last good exit before a deeper decline) re-arms loud instead of arriving pre-
+    # faded. During a stall/partial rally breach flattens or falls and the break ages,
+    # correctly quietening.
+    b = breach.to_numpy()
+    age = np.zeros(len(b))
     run = 0
-    for i in range(len(opened)):
-        run = run + 1 if opened[i] else 0
-        age[i] = max(0, run - 1)
+    for i in range(len(b)):
+        fresh_leg = b[i] > 0 and (i == 0 or b[i] > b[i - 1] + 1e-9)  # new/deeper break -> reset
+        if b[i] <= 0 or fresh_leg:
+            run = 0
+        else:
+            run += 1
+        age[i] = run
     fade = np.exp(-(age / trail_tau))
-    fresh = pd.Series(breach.to_numpy() * fade * 100, index=ind.index)   # loud at the fresh break
+    fresh = pd.Series(b * fade * 100, index=ind.index)   # loud at each fresh break
 
     # non-fading secular backstop: absolute trend levels (not the fast drawdown, which
-    # re-arms downward in a grind) so a sustained bear keeps the tool selling.
+    # re-arms downward in a grind) so a sustained bear keeps the tool selling. GRADED &
+    # PRICE-CONFIRMED, not lagging binaries: the 200-DMA leg ramps with distance below the
+    # average, and the regime (SMA50<SMA200) leg ramps with the SMA spread but is GATED on
+    # price<SMA50 — so a death cross that prints purely from 50-day-old data rolling off
+    # cannot escalate sell-pressure while price is rallying back above the fast average.
+    c200, sma200, sma50 = c, ind["sma200"], ind["sma50"]
+    d200 = ((sma200 - c200) / (0.03 * sma200)).clip(0, 1)                       # 0 at MA, 1 at -3%
+    dregime = ((sma200 - sma50) / (0.02 * sma200)).clip(0, 1) * (c200 < sma50)  # gated on price<SMA50
     confirm = (
-        0.5 * ind["below_200dma"].astype(float)
-        + 0.3 * ind["death_cross"].astype(float)
+        0.5 * d200
+        + 0.3 * dregime
         + 0.2 * ind["below_40w_low"].astype(float)
     ) * 100
 
@@ -104,11 +182,20 @@ def compute_scores(
     prox = (1.0 - dd / PROX_KNEE).clip(0, 1)
     overbought = overbought_raw * (0.5 + 0.5 * prox)
 
-    # --- momentum rollover (weekly MACD): two INDEPENDENT reads, each 0/50 ---
-    # below the signal line (turning down) + below the zero line (confirmed bear territory).
-    # (Previously the 2nd term used hist<0, which equals macd<signal — redundant, so momentum
-    # was only ever 0 or 100. Using the zero-line makes it graded: 0 / 50 / 100.)
-    momentum = (ind["macd_w"] < ind["macd_sig_w"]).astype(float) * 50 + (ind["macd_w"] < 0).astype(float) * 50
+    # --- momentum rollover (weekly MACD): CONTINUOUS, two independent reads ---
+    # Depth below the signal line (turning down) + depth below the zero line (confirmed
+    # bear territory), each 0..50, normalised by the point-in-time mean-abs scale of the
+    # relevant MACD quantity so the reads are graded, not a 0/50/100 step. The old step
+    # jumped +9 composite points overnight the instant MACD crossed a line, then pinned at
+    # 100 for weeks (zero marginal information); the continuous form ramps with how far the
+    # roll-over has actually progressed and eases as it recovers.
+    macd, sig = ind["macd_w"], ind["macd_sig_w"]
+    s_hist = (macd - sig).abs().expanding(min_periods=52).mean().replace(0, np.nan)
+    s_macd = macd.abs().expanding(min_periods=52).mean().replace(0, np.nan)
+    below_sig = ((sig - macd) / s_hist).clip(0, 1) * 50
+    below_zero = ((-macd) / s_macd).clip(0, 1) * 50
+    step_fallback = (macd < sig).astype(float) * 50 + (macd < 0).astype(float) * 50  # warm-up only
+    momentum = (below_sig + below_zero).fillna(step_fallback)
 
     seasonality = _seasonality(c)
 
@@ -142,11 +229,7 @@ def compute_scores(
     # 'sell' fires on a FRESH break OR a confirmed bear (not only after a deep death-cross).
     n_trend = (breach > 0).astype(int) + (confirm >= 50).astype(int)   # 0..2
 
-    verdict = np.select(
-        [(n_trend >= 2) & (composite >= T_SELL), composite >= T_TRANCHE, composite >= T_TRIM],
-        ["sell", "sell_tranche", "trim"],
-        default="hold",
-    )
+    verdict = _hysteretic_verdict(composite, n_trend)
 
     flags = pd.DataFrame(
         {

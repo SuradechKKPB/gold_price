@@ -9,7 +9,9 @@ import { fetchRealtimeGold } from "@/lib/realtime";
 import { getBacktest, getIntlHistory, getLatestSignal, getLatestTick, getPriceHistory } from "@/lib/queries";
 import { DXY_TABLE, fetchCurrentDxy } from "@/lib/dxy";
 
-export const revalidate = 60;
+// Decision tool: always render the current score from the DB — never serve a stale
+// prerender/fetch-cache (a wrong number here mistimes a real sell).
+export const dynamic = "force-dynamic";
 
 const SIGNAL_LABELS: Record<string, string> = {
   trailing_stop_fired: "เบรกจากจุดสูงสุด (trailing stop)",
@@ -135,7 +137,7 @@ export default async function Page() {
         </p>
         <div style={{ display: "grid", gap: 16, marginTop: 14 }}>
           {[
-            { name: "คะแนนรวม", weight: "0–100", cur: signal?.sell_pressure, desc: "ภาพรวมแรงกดดันให้ขาย — เกณฑ์: ≥33 เริ่มลดพอร์ต · ≥42 ขายบางส่วน · ≥50 (พร้อมสัญญาณเบรกเทรนด์ ≥2 ตัว) ขายออก",
+            { name: "คะแนนรวม", weight: "0–100", cur: signal?.sell_pressure, desc: "ภาพรวมแรงกดดันให้ขาย — เกณฑ์: ≥44 เริ่มลดพอร์ต · ≥52 ขายบางส่วน · ≥60 (พร้อมสัญญาณเบรกเทรนด์ ≥2 ตัว) ขายออก · verdict มี hysteresis กันสลับไปมา · หมายเหตุ: จาก backtest (fill วันถัดไป, เลือกเกณฑ์จากข้อมูลก่อนปี 2020) สัญญาณชนะการทยอยขาย DCA แค่ ~52–56% — ใช้เป็น ‘ตัวช่วยจับจังหวะ’ เสริม DCA ไม่ใช่ตัวชี้ขาด",
               formula: signal
                 ? `= 0.40×${signal.trend_break.toFixed(0)} + 0.25×${signal.overbought.toFixed(0)} + 0.18×${signal.momentum.toFixed(0)} + 0.12×${signal.fa_score.toFixed(0)} + 0.05×${signal.seasonality.toFixed(0)} = ${signal.sell_pressure.toFixed(0)}`
                 : "= 0.40×เบรกเทรนด์ + 0.25×ซื้อมากเกินไป + 0.18×โมเมนตัม + 0.12×ดอลลาร์ + 0.05×ฤดูกาล" },
@@ -143,12 +145,12 @@ export default async function Page() {
               formula: "= 0.70×(ความแรงเบรก × ความสดของเบรก) + 0.30×(ยืนยันขาลงระยะยาว) · เบรกเปิดเมื่อราคา −3% จากยอด, อิ่มตัวที่ −8%, ความสดจางตามอายุของเบรก" },
             { name: "ซื้อมากเกินไป", weight: "25%", cur: signal?.overbought, desc: "รวมตัวชี้วัดที่บอกว่าราคา ‘ยืดเกิน’ — RSI รายสัปดาห์, ระยะห่างเหนือเส้น 200 วัน, Bollinger %B, ผลตอบแทน 1 ปี · สูง = เสี่ยงย่อ แต่ขาขึ้นแรงอาจค้างสูงได้นาน จึงใช้เป็นสัญญาณ ‘รัดสตอป’ มากกว่าขายทันที",
               formula: "= ค่าเฉลี่ย(clip 0–100): %เหนือ200DMA÷26% · (RSI14wk−50)÷30 · (%B−0.5)÷0.5 · ROC252วัน÷50%" },
-            { name: "โมเมนตัม", weight: "18%", cur: signal?.momentum, desc: "MACD รายสัปดาห์: ต่ำกว่าเส้น signal (+50) และต่ำกว่าเส้นศูนย์ (+50) · 50 = เริ่มเป็นขาลง, 100 = ขาลงเต็มตัว",
-              formula: "= (MACDwk < signal ? 50 : 0) + (MACDwk < 0 ? 50 : 0)" },
-            { name: "ดอลลาร์ (DXY)", weight: "12%", cur: signal?.fa_score, desc: "ระดับ Dollar Index บ่งทิศทางทองในบาท 12 เดือนข้างหน้า (สถิติย้อนหลัง) — DXY สูง = บาทอ่อน = หนุนทองไทย → กดดันขายต่ำ; DXY ต่ำ = กดดันขายสูง",
-              formula: "= map(ช่วง DXY → คะแนน): <80→70 · 80–90→58 · 90–100→45 · 100–110→18 · >110→15" },
-            { name: "ฤดูกาล", weight: "5%", cur: signal?.seasonality, desc: "รูปแบบราคาตามเดือนในอดีต (เช่น มิ.ย. มักอ่อนแรง) · น้ำหนักน้อยเพราะขึ้นกับสภาวะตลาด ไม่แน่นอน",
-              formula: "= map(ผลตอบแทนเฉลี่ยรายเดือนย้อนหลัง) → เดือนอ่อนแรง = คะแนนสูง" },
+            { name: "โมเมนตัม", weight: "18%", cur: signal?.momentum, desc: "MACD รายสัปดาห์แบบต่อเนื่อง: ยิ่งต่ำกว่าเส้น signal และต่ำกว่าเส้นศูนย์มากเท่าไรคะแนนยิ่งสูง (ไม่ใช่ขั้นบันได 0/50/100 อีกต่อไป จึงไม่กระโดดข้ามคืน)",
+              formula: "= 50×clip(ระยะต่ำกว่า signal / ค่าเฉลี่ยระยะในอดีต) + 50×clip(ระยะต่ำกว่าศูนย์ / ค่าเฉลี่ยในอดีต)" },
+            { name: "ดอลลาร์ (DXY)", weight: "12%", cur: signal?.fa_score, desc: "ระดับ Dollar Index เทียบทิศทางทองในบาท — ดอลลาร์แข็ง = ลมต้านทอง → กดดันขายสูง; ดอลลาร์อ่อน = กดดันขายต่ำ (สอดคล้องสถิติก่อนปี 2020 + เศรษฐศาสตร์ · ตารางเดิมกลับทิศเพราะปนข้อมูลปี 2020–26 ที่ดอลลาร์แข็งพร้อมทองพุ่ง = lookahead)",
+              formula: "= map(ช่วง DXY → คะแนน): <80→30 · 80–90→40 · 90–100→55 · 100–110→68 · >110→75" },
+            { name: "ฤดูกาล", weight: "5%", cur: signal?.seasonality, desc: "รูปแบบราคาตามเดือนในอดีต (เช่น มิ.ย. มักอ่อนแรง) · น้ำหนักน้อยเพราะขึ้นกับสภาวะตลาด ไม่แน่นอน · ประเมินแบบ point-in-time (ใช้เฉพาะข้อมูลถึงวันนั้น ไม่แอบเห็นอนาคต)",
+              formula: "= map(ผลตอบแทนเฉลี่ยรายเดือน ‘ถึงวันนั้น’) → เดือนอ่อนแรง = คะแนนสูง" },
           ].map((s) => (
             <div key={s.name} style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
               <div style={{ width: 116, flexShrink: 0 }}>

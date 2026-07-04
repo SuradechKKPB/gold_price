@@ -1,21 +1,29 @@
 """Compute-only: recompute the sell-pressure signals from the price history that
 already lives in Supabase. Touches ONLY Supabase — never GTA — so it runs fine on
-GitHub Actions, where GTA's 403 blocks the live fetch.
+GitHub Actions, where GTA's 403 blocks the live fetch. This is the ONLY job on the
+6-hourly cron, so it also owns event alerting.
 
 The score's price BASIS is the international (world) gold price in THB, not the Thai
 association quote (see etl/intl.py for why). The phone writes goldSpot + bahtPerUSD on
 every sync, so intl.topup_from_daily derives the freshest days with no external call,
 keeping this cron self-sufficient. The association price stays the realized/displayed
 number elsewhere (dashboard headline, backtest realized price).
+
+Two housekeeping behaviours make the pipeline honest:
+  - AUTO-HEAL: if the score formula version changed since signals_daily was last
+    written, rewrite the WHOLE history so the backtest sees a single formula epoch.
+  - EVENT ALERTS: fire a LINE ping on any verdict transition (dedup via etl.state).
 """
 
 from __future__ import annotations
 
-from . import indicators, intl, load, signals
+import argparse
+
+from . import advice, alerts, indicators, intl, load, signals, state
 from .config import settings
 
 
-def main() -> None:
+def main(force_full: bool = False) -> None:
     if not settings.has_supabase:
         print("No Supabase env; nothing to compute.")
         return
@@ -26,13 +34,29 @@ def main() -> None:
     dxy = load.fetch_macro(sb, "dxy")
     scores = signals.compute_scores(ind, dxy)
     latest = scores.iloc[-1]
-    n = signals.upsert_signals(sb, scores.tail(30))
+
+    # AUTO-HEAL: a formula change (SCORE_VERSION bump) rewrites the full history so the
+    # backtest never mixes vintages; otherwise only the recent tail needs refreshing.
+    stored = state.get_score_version(sb)
+    full = force_full or stored != signals.SCORE_VERSION
+    to_write = scores if full else scores.tail(30)
+    n = signals.upsert_signals(sb, to_write)
+    if full:
+        state.set_score_version(sb, signals.SCORE_VERSION)
+
+    advice.topup_premium(sb)                        # refresh local-premium z for the dashboard
+    extra = advice.advice_line(advice.build_advice(sb))  # personal campaign overlay for the alert
+    sent = alerts.alert_on_transition(sb, scores, extra=extra)
+
     print(
-        f"Recomputed {n} signal rows from {len(daily)} intl prices. "
+        f"Recomputed {len(scores)} intl scores; wrote {n} rows "
+        f"({'FULL backfill v' + str(signals.SCORE_VERSION) if full else 'tail-30'}). "
         f"Latest {latest.name.date()}: {latest['sell_pressure']:.0f}/100 -> {latest['verdict']} "
-        f"({latest['active_signals']})"
+        f"({latest['active_signals']}). {'LINE transition alert sent.' if sent else 'No alert.'}"
     )
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--full", action="store_true", help="force a full-history rewrite of signals_daily")
+    main(force_full=ap.parse_args().full)

@@ -31,9 +31,9 @@ export function VerdictChip({ verdict }: { verdict: Verdict }) {
 }
 
 function zoneColor(score: number): string {
-  if (score >= 50) return "var(--red)";
-  if (score >= 42) return "var(--orange)";
-  if (score >= 33) return "var(--amber)";
+  if (score >= 60) return "var(--red)";
+  if (score >= 52) return "var(--orange)";
+  if (score >= 44) return "var(--amber)";
   return "var(--green)";
 }
 
@@ -56,15 +56,15 @@ export function ScoreGauge({ score }: { score: number }) {
             borderRadius: 6,
           }}
         />
-        {[33, 42, 50].map((t) => (
+        {[44, 52, 60].map((t) => (
           <div key={t} style={{ position: "absolute", left: `${t}%`, top: -3, bottom: -3, width: 1, background: "var(--border)" }} />
         ))}
       </div>
       <div className="muted mono" style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginTop: 6 }}>
         <span>0 ถือ</span>
-        <span>ลด 33</span>
-        <span>บางส่วน 42</span>
-        <span>ขาย 50</span>
+        <span>ลด 44</span>
+        <span>บางส่วน 52</span>
+        <span>ขาย 60</span>
         <span>100</span>
       </div>
     </div>

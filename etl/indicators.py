@@ -42,6 +42,7 @@ def build(daily: pd.DataFrame, spread_thb: float) -> pd.DataFrame:
     # --- daily-basis trend signals ---
     sma50 = c.rolling(50).mean()
     sma200 = c.rolling(200).mean()
+    out["sma50"] = sma50
     out["sma200"] = sma200
     out["stretch_200"] = c / sma200 - 1.0          # % above the 200-DMA (Mayer-style)
     out["death_cross"] = sma50 < sma200

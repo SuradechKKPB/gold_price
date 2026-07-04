@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from . import indicators, intl, signals
+from . import indicators, intl, signals, state
 from .config import settings
 from .gta import GoldTick, fetch_latest, fetch_ohlc, ohlc_to_daily
 
@@ -74,10 +74,12 @@ def main() -> None:
     daily = _merge_today(daily, tick)
 
     # --- score basis = international (world gold in THB), not the association quote ---
-    # persist today's intl from the tick's spot/fx, then score on the world-price series.
+    # Fill recent intl days from phone spot/fx FIRST, then overwrite today with the fresh
+    # live GTA tick — otherwise topup's (possibly older) phone snapshot would clobber the
+    # tick we just fetched for the same date.
+    intl.topup_from_daily(sb)
     if tick.gold_spot_usd and tick.baht_per_usd:
         intl.upsert_today(sb, today, tick.gold_spot_usd, tick.baht_per_usd)
-    intl.topup_from_daily(sb)               # also catch any phone-written days
     daily_intl = intl.load_intl_daily(sb)
     ind = indicators.build(daily_intl, 0.0)
     dxy = load.fetch_macro(sb, "dxy")
@@ -86,11 +88,19 @@ def main() -> None:
 
     load.upsert_tick(sb, tick)
     n_daily = load.upsert_daily(sb, daily.tail(7), settings.bar_spread_thb)
-    n_sig = signals.upsert_signals(sb, scores.tail(30))
-    sent = alerts.maybe_alert(scores, tick)
+    # AUTO-HEAL on a formula change, same rule as compute.py (single-epoch signals_daily).
+    full = state.get_score_version(sb) != signals.SCORE_VERSION
+    n_sig = signals.upsert_signals(sb, scores if full else scores.tail(30))
+    if full:
+        state.set_score_version(sb, signals.SCORE_VERSION)
+    from . import advice
+    advice.topup_premium(sb)
+    extra = advice.advice_line(advice.build_advice(sb))
+    sent = alerts.alert_on_transition(sb, scores, buy_in=tick.bar_buy, extra=extra)
 
     print(f"OK: buy-in {tick.bar_buy:,.0f}; sell-pressure {latest['sell_pressure']:.0f}/100 -> {latest['verdict']}")
-    print(f"Upserted 1 tick, {n_daily} daily, {n_sig} signal rows. {'LINE alert sent.' if sent else 'No alert.'}")
+    print(f"Upserted 1 tick, {n_daily} daily, {n_sig} signal rows ({'FULL' if full else 'tail-30'}). "
+          f"{'LINE transition alert sent.' if sent else 'No alert.'}")
 
 
 if __name__ == "__main__":
