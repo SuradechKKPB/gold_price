@@ -79,10 +79,11 @@ def _transition_message(prev: str, cur: str, score: float, buy_in: float | None,
 def alert_on_transition(sb, scores, *, buy_in: float | None = None, extra: str = "") -> bool:
     """Broadcast iff the latest verdict differs from the last one we alerted on.
 
-    State (etl.state) holds (last_alerted_verdict, date). On the very first run we
-    seed state silently — the phone digest already surfaces the current verdict, so
-    a transition channel should only speak on genuine CHANGES, not on deploy.
-    State is advanced only after a successful send, so a LINE outage retries next run.
+    Missing state anchors to a NEUTRAL 'hold' baseline, NOT the live verdict: a standing
+    elevated signal (trim/tranche/sell) then fires on the first run instead of being
+    silently adopted — the bug that swallowed the 2026-07-08 sell. At 'hold' there is
+    nothing to announce, so the baseline is just persisted once and no spurious deploy-time
+    alert goes out. State advances only after a successful send, so a LINE outage retries.
     """
     valid = scores.dropna(subset=["sell_pressure"])
     if not len(valid):
@@ -91,11 +92,11 @@ def alert_on_transition(sb, scores, *, buy_in: float | None = None, extra: str =
     cur = row["verdict"]
     cur_date = valid.index[-1].date().isoformat()
 
-    last_verdict, _ = state.get_alert_state(sb)
-    if last_verdict is None:
-        state.set_alert_state(sb, cur, cur_date, _LEVEL.get(cur, 0))
-        return False
+    stored_verdict, _ = state.get_alert_state(sb)
+    last_verdict = stored_verdict if stored_verdict is not None else "hold"
     if cur == last_verdict:
+        if stored_verdict is None:
+            state.set_alert_state(sb, cur, cur_date, _LEVEL.get(cur, 0))  # persist baseline once
         return False
 
     if buy_in is None:
