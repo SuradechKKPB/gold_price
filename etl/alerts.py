@@ -58,7 +58,7 @@ def _latest_buy_in(sb) -> float | None:
     return None
 
 
-def _transition_message(prev: str, cur: str, score: float, buy_in: float | None, extra: str = "") -> str:
+def _transition_message(prev: str, cur: str, score: float, buy_in: float | None, extra: str = "", as_of: str = "") -> str:
     up = _LEVEL.get(cur, 0) > _LEVEL.get(prev, 0)
     head = "⚠️ สัญญาณขายทองเข้มขึ้น" if up else "🟢 สัญญาณขายทองผ่อนลง"
     prev_th, cur_th = _VERDICT_TH.get(prev, prev), _VERDICT_TH.get(cur, cur)
@@ -69,6 +69,8 @@ def _transition_message(prev: str, cur: str, score: float, buy_in: float | None,
         f"คะแนน {score:.0f}/100\n"
         f"ราคารับซื้อ {price}"
     )
+    if as_of:
+        body += f"\nข้อมูล ณ {as_of}"   # surface the data date so a stale (weekend/holiday) signal is visible, not hidden
     if extra:
         body += f"\n{extra}"
     return f"{body}\nดูรายละเอียด: {settings.dashboard_url}"
@@ -98,7 +100,7 @@ def alert_on_transition(sb, scores, *, buy_in: float | None = None, extra: str =
 
     if buy_in is None:
         buy_in = _latest_buy_in(sb)
-    msg = _transition_message(last_verdict, cur, float(row["sell_pressure"]), buy_in, extra)
+    msg = _transition_message(last_verdict, cur, float(row["sell_pressure"]), buy_in, extra, as_of=cur_date)
     if send_line_broadcast(msg):
         state.set_alert_state(sb, cur, cur_date, _LEVEL.get(cur, 0))
         return True

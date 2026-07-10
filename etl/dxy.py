@@ -8,6 +8,8 @@ on the DXY level bucket (the user's request: avg return, avg loss, return/maxDD)
 
 from __future__ import annotations
 
+import math
+
 import httpx
 import numpy as np
 import pandas as pd
@@ -41,7 +43,13 @@ DOLLAR_SELL = {"<80": 30.0, "80–90": 40.0, "90–100": 55.0, "100–110": 68.0
 
 
 def dollar_regime_score(dxy: float | None) -> float:
-    return DOLLAR_SELL.get(band_of(dxy), 50.0) if dxy is not None else 50.0
+    """Map a DXY level to sell-pressure. Missing/NaN → neutral 50 — never the >110
+    high-sell band, which band_of() would otherwise return for a NaN (all comparisons
+    False → fall-through). signals.compute_scores already guards this inline; this keeps
+    the standalone entry point safe too."""
+    if dxy is None or not math.isfinite(dxy):
+        return 50.0
+    return DOLLAR_SELL.get(band_of(dxy), 50.0)
 
 
 def backfill_macro(sb) -> int:
@@ -96,9 +104,18 @@ def fetch_current_dxy() -> float | None:
     return _dxy_from_rates(r)
 
 
-def study(gold_close: pd.Series, dxy: pd.Series) -> dict:
-    """Conditional next-12-month THB-gold stats by DXY bucket."""
+def study(gold_close: pd.Series, dxy: pd.Series, end: str | None = None) -> dict:
+    """Conditional next-12-month THB-gold stats by DXY bucket.
+
+    `end` (e.g. '2020-01-01') keeps the ENTIRE conditioning-plus-forward window before
+    the cutoff — the clean, no-look-ahead sample the deployed DOLLAR_SELL table is anchored
+    to. The 2020–26 THB-gold melt-up (where a high DXY coincided with rising gold) is
+    excluded outright; gating only the start date would leak it back in and break the
+    monotone ranking, so the whole series is truncated.
+    """
     g = gold_close.resample("ME").last()
+    if end is not None:
+        g = g[g.index < pd.Timestamp(end)]
     d = dxy.resample("ME").last().reindex(g.index, method="ffill")
     rows = []
     vals = g.values
@@ -132,17 +149,20 @@ def study(gold_close: pd.Series, dxy: pd.Series) -> dict:
 
 
 def main() -> None:
+    """Reproduce the DOLLAR_SELL anchor table: pre-2020 conditional forward returns of
+    the INTERNATIONAL THB basis (the basis the score actually reads) by DXY band, using
+    the stored DXY the score joins. Run locally: uv run python -m etl.dxy"""
     from . import load
 
     sb = load.client()
-    gold = load.fetch_daily(sb)
-    gold.index = pd.to_datetime(gold["trade_date"])
-    close = gold["bar_sell_close"].astype(float)  # ratio-based study; constant spread is negligible
-    dxy = fetch_dxy_series("2006-01-01")
+    gold = load.fetch_macro(sb, "gold_intl_thb")   # the score's basis, not the association quote
+    dxy = load.fetch_macro(sb, "dxy")              # the stored DXY the score joins
     cur = fetch_current_dxy()
-    print(f"Current reconstructed DXY = {cur:.2f}  -> band {band_of(cur)}")
-    print(f"DXY span: {dxy.index.min().date()} .. {dxy.index.max().date()}  ({dxy.min():.1f}–{dxy.max():.1f})\n")
-    t = study(close, dxy)
+    if cur is not None:
+        print(f"Current reconstructed DXY = {cur:.2f}  -> band {band_of(cur)}")
+    print(f"DXY span: {dxy.index.min().date()} .. {dxy.index.max().date()}  ({dxy.min():.1f}–{dxy.max():.1f})")
+    print("Sample: entire conditioning+forward window pre-2020 (clean / no look-ahead) — anchors DOLLAR_SELL.\n")
+    t = study(gold, dxy, end="2020-01-01")
     print(f"{'band':>10} | {'n':>4} | {'avg 12m ret':>12} | {'avg loss':>9} | {'%pos':>5} | {'ret/maxDD':>9}")
     print("-" * 66)
     for _, _, label in BANDS:

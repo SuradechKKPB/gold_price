@@ -29,4 +29,8 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # This cron owns event alerting (alerts.alert_on_transition). Without the token
+          # send_line_broadcast() no-ops, so transition alerts silently never fire from the
+          # only reliable scheduled runner. Set the repo secret for this to work.
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
         run: uv run python -m etl.compute
