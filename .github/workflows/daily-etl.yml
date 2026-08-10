@@ -1,14 +1,26 @@
 name: compute-signals
 
-# GTA blocks GitHub's datacenter IPs (403), so the live price fetch runs on the
-# phone (joe-health phone_sync.py) and writes to Supabase. This job is COMPUTE-ONLY:
-# it recomputes the sell-pressure score from the prices already in Supabase — no GTA
-# call — so it runs reliably on GitHub and keeps the dashboard score fresh.
-# Runs every 6h to pick up the phone's daily price write.
+# GTA blocks GitHub's datacenter IPs (403), but the SCORE runs on the world gold price,
+# which is public — etl.compute fetches it itself (intl.fetch_live_intl). So this job is
+# self-sufficient: no phone required to keep the dashboard score fresh.
+#
+# LINE schedule (Asia/Bangkok = UTC+7, no DST):
+#   00:00 UTC = 07:00 ICT  -> daily DIGEST (always sends: price + score + verdict)
+#   09:00 UTC = 16:00 ICT  -> daily DIGEST
+#   06:00 UTC = 13:00 ICT  -> compute + transition alert only (fires only if the verdict moved)
+#   18:00 UTC = 01:00 ICT  -> compute + transition alert only
+# GitHub may delay scheduled runs 5-30 min under load.
 on:
   schedule:
-    - cron: "0 */6 * * *"
-  workflow_dispatch: {}
+    - cron: "0 0 * * *"     # 07:00 ICT — digest
+    - cron: "0 9 * * *"     # 16:00 ICT — digest
+    - cron: "0 6,18 * * *"  # 13:00 / 01:00 ICT — compute + transition check
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: "also send the daily digest LINE (for manual testing)"
+        type: boolean
+        default: false
 
 jobs:
   compute:
@@ -29,8 +41,16 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          # This cron owns event alerting (alerts.alert_on_transition). Without the token
-          # send_line_broadcast() no-ops, so transition alerts silently never fire from the
-          # only reliable scheduled runner. Set the repo secret for this to work.
+          # This cron owns LINE messaging. Without the token send_line_broadcast() no-ops,
+          # so both the digest and transition alerts silently never fire. Set the repo secret.
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-        run: uv run python -m etl.compute
+        # The 07:00 and 16:00 ICT schedules (and a manual digest run) send the daily card;
+        # every other run only alerts on a verdict transition.
+        run: |
+          if [ "${{ github.event.schedule }}" = "0 0 * * *" ] || \
+             [ "${{ github.event.schedule }}" = "0 9 * * *" ] || \
+             [ "${{ inputs.digest }}" = "true" ]; then
+            uv run python -m etl.compute --digest
+          else
+            uv run python -m etl.compute
+          fi
