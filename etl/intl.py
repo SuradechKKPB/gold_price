@@ -96,6 +96,50 @@ def backfill(sb, start: str = "2006-01-01") -> int:
     return _upsert(sb, build_intl_thb(start), "lbma_x_frankfurter")
 
 
+def fetch_live_intl() -> tuple[float | None, float | None, float | None]:
+    """Live world gold in THB from KEYLESS sources that answer from ANY IP — including
+    GitHub's datacenter runners (unlike GTA, which 403s them). This is what lets the cron
+    keep the SCORE fresh with no phone in the loop: the score basis is the world price, and
+    the world price is public. Each leg has a fallback. Returns (xau_usd, usd_thb, intl_thb),
+    any of which may be None if every source for that leg failed."""
+    xau = None
+    for url, pick in (
+        ("https://api.gold-api.com/price/XAU", lambda j: j.get("price")),
+        (LBMA_PM, lambda j: next((r["v"][0] for r in reversed(j) if r.get("v") and r["v"][0] is not None), None)),
+    ):
+        try:
+            v = pick(httpx.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20).json())
+            if v:
+                xau = float(v); break
+        except Exception:  # noqa: BLE001
+            continue
+    fx = None
+    for url, pick in (
+        (f"{FRANKFURTER}/latest?base=USD&symbols=THB", lambda j: j["rates"]["THB"]),
+        ("https://open.er-api.com/v6/latest/USD", lambda j: j["rates"]["THB"]),
+    ):
+        try:
+            v = pick(httpx.get(url, timeout=20).json())
+            if v:
+                fx = float(v); break
+        except Exception:  # noqa: BLE001
+            continue
+    return xau, fx, (xau * fx * CONV if xau and fx else None)
+
+
+def topup_live(sb, trade_date=None) -> float | None:
+    """Self-sufficient daily refresh: derive today's intl from the keyless world-price feeds
+    and upsert it, so the compute cron produces a fresh score even when the phone (which
+    supplies the association quote + spot) has not written today. Best-effort — returns the
+    value written, or None if the live fetch failed (caller falls back to phone data)."""
+    _, _, val = fetch_live_intl()
+    if val is None:
+        return None
+    d = (trade_date or pd.Timestamp.today().normalize()).date() if trade_date is None else pd.Timestamp(trade_date).date()
+    _upsert(sb, pd.Series({pd.Timestamp(d): val}), "live_api")
+    return val
+
+
 def topup_from_daily(sb, days: int = 21) -> int:
     """Refresh the LAST `days` days from the phone's goldSpot×bahtPerUSD in gold_price_daily.
 
