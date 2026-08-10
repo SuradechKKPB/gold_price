@@ -28,7 +28,9 @@ def main(force_full: bool = False) -> None:
         print("No Supabase env; nothing to compute.")
         return
     sb = load.client()
-    intl.topup_from_daily(sb)                # refresh recent intl from phone-written spot/fx
+    intl.topup_from_daily(sb)                # recent intl from phone-written spot/fx (if any)
+    live = intl.topup_live(sb)               # SELF-SUFFICIENT: today's intl from keyless world feeds,
+    print(f"live intl today: {live:,.0f}" if live else "live intl fetch failed (using phone data)")
     daily = intl.load_intl_daily(sb)         # world gold in THB (96.5% basis), daily OHLC
     ind = indicators.build(daily, 0.0)       # no association bid/ask spread on the world price
     dxy = load.fetch_macro(sb, "dxy")

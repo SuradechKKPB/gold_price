@@ -58,7 +58,7 @@ def _latest_buy_in(sb) -> float | None:
     return None
 
 
-def _transition_message(prev: str, cur: str, score: float, buy_in: float | None, extra: str = "") -> str:
+def _transition_message(prev: str, cur: str, score: float, buy_in: float | None, extra: str = "", as_of: str = "") -> str:
     up = _LEVEL.get(cur, 0) > _LEVEL.get(prev, 0)
     head = "⚠️ สัญญาณขายทองเข้มขึ้น" if up else "🟢 สัญญาณขายทองผ่อนลง"
     prev_th, cur_th = _VERDICT_TH.get(prev, prev), _VERDICT_TH.get(cur, cur)
@@ -69,6 +69,8 @@ def _transition_message(prev: str, cur: str, score: float, buy_in: float | None,
         f"คะแนน {score:.0f}/100\n"
         f"ราคารับซื้อ {price}"
     )
+    if as_of:
+        body += f"\nข้อมูล ณ {as_of}"   # surface the data date so a stale (weekend/holiday) signal is visible, not hidden
     if extra:
         body += f"\n{extra}"
     return f"{body}\nดูรายละเอียด: {settings.dashboard_url}"
@@ -77,10 +79,11 @@ def _transition_message(prev: str, cur: str, score: float, buy_in: float | None,
 def alert_on_transition(sb, scores, *, buy_in: float | None = None, extra: str = "") -> bool:
     """Broadcast iff the latest verdict differs from the last one we alerted on.
 
-    State (etl.state) holds (last_alerted_verdict, date). On the very first run we
-    seed state silently — the phone digest already surfaces the current verdict, so
-    a transition channel should only speak on genuine CHANGES, not on deploy.
-    State is advanced only after a successful send, so a LINE outage retries next run.
+    Missing state anchors to a NEUTRAL 'hold' baseline, NOT the live verdict: a standing
+    elevated signal (trim/tranche/sell) then fires on the first run instead of being
+    silently adopted — the bug that swallowed the 2026-07-08 sell. At 'hold' there is
+    nothing to announce, so the baseline is just persisted once and no spurious deploy-time
+    alert goes out. State advances only after a successful send, so a LINE outage retries.
     """
     valid = scores.dropna(subset=["sell_pressure"])
     if not len(valid):
@@ -89,16 +92,16 @@ def alert_on_transition(sb, scores, *, buy_in: float | None = None, extra: str =
     cur = row["verdict"]
     cur_date = valid.index[-1].date().isoformat()
 
-    last_verdict, _ = state.get_alert_state(sb)
-    if last_verdict is None:
-        state.set_alert_state(sb, cur, cur_date, _LEVEL.get(cur, 0))
-        return False
+    stored_verdict, _ = state.get_alert_state(sb)
+    last_verdict = stored_verdict if stored_verdict is not None else "hold"
     if cur == last_verdict:
+        if stored_verdict is None:
+            state.set_alert_state(sb, cur, cur_date, _LEVEL.get(cur, 0))  # persist baseline once
         return False
 
     if buy_in is None:
         buy_in = _latest_buy_in(sb)
-    msg = _transition_message(last_verdict, cur, float(row["sell_pressure"]), buy_in, extra)
+    msg = _transition_message(last_verdict, cur, float(row["sell_pressure"]), buy_in, extra, as_of=cur_date)
     if send_line_broadcast(msg):
         state.set_alert_state(sb, cur, cur_date, _LEVEL.get(cur, 0))
         return True
