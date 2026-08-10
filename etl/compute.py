@@ -9,10 +9,11 @@ every sync, so intl.topup_from_daily derives the freshest days with no external 
 keeping this cron self-sufficient. The association price stays the realized/displayed
 number elsewhere (dashboard headline, backtest realized price).
 
-Two housekeeping behaviours make the pipeline honest:
+Housekeeping behaviours that make the pipeline honest:
   - AUTO-HEAL: if the score formula version changed since signals_daily was last
     written, rewrite the WHOLE history so the backtest sees a single formula epoch.
-  - EVENT ALERTS: fire a LINE ping on any verdict transition (dedup via etl.state).
+  - LINE: --digest sends a fixed-time daily card (07:00 / 16:00 ICT runs, always);
+    other runs only fire an EVENT ping on a verdict transition (dedup via etl.state).
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from . import advice, alerts, indicators, intl, load, signals, state
 from .config import settings
 
 
-def main(force_full: bool = False) -> None:
+def main(force_full: bool = False, digest: bool = False) -> None:
     if not settings.has_supabase:
         print("No Supabase env; nothing to compute.")
         return
@@ -47,18 +48,25 @@ def main(force_full: bool = False) -> None:
         state.set_score_version(sb, signals.SCORE_VERSION)
 
     advice.topup_premium(sb)                        # refresh local-premium z for the dashboard
-    extra = advice.advice_line(advice.build_advice(sb))  # personal campaign overlay for the alert
-    sent = alerts.alert_on_transition(sb, scores, extra=extra)
+    extra = advice.advice_line(advice.build_advice(sb))  # personal campaign overlay for the message
+    if digest:
+        sent = alerts.send_daily_digest(sb, scores, extra=extra)
+        line = "LINE daily digest sent." if sent else "digest NOT sent (no LINE token)."
+    else:
+        sent = alerts.alert_on_transition(sb, scores, extra=extra)
+        line = "LINE transition alert sent." if sent else "No alert."
 
     print(
         f"Recomputed {len(scores)} intl scores; wrote {n} rows "
         f"({'FULL backfill v' + str(signals.SCORE_VERSION) if full else 'tail-30'}). "
         f"Latest {latest.name.date()}: {latest['sell_pressure']:.0f}/100 -> {latest['verdict']} "
-        f"({latest['active_signals']}). {'LINE transition alert sent.' if sent else 'No alert.'}"
+        f"({latest['active_signals']}). {line}"
     )
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true", help="force a full-history rewrite of signals_daily")
-    main(force_full=ap.parse_args().full)
+    ap.add_argument("--digest", action="store_true", help="send the fixed-time daily digest LINE (07:00/16:00 runs)")
+    args = ap.parse_args()
+    main(force_full=args.full, digest=args.digest)

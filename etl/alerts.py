@@ -76,6 +76,41 @@ def _transition_message(prev: str, cur: str, score: float, buy_in: float | None,
     return f"{body}\nดูรายละเอียด: {settings.dashboard_url}"
 
 
+def send_daily_digest(sb, scores, *, extra: str = "") -> bool:
+    """Fixed-time daily digest from the cron — sends EVERY time it's called, whether or not
+    the verdict moved (unlike alert_on_transition). Mirrors the phone's "ราคาทองวันนี้" card
+    so the GitHub cron can own the routine 07:00 / 16:00 ping without depending on the phone.
+    Also advances the alert state to the current verdict, so a same-run transition check does
+    not double-send."""
+    valid = scores.dropna(subset=["sell_pressure"])
+    if not len(valid):
+        return False
+    row = valid.iloc[-1]
+    verdict = row["verdict"]
+    score = float(row["sell_pressure"])
+    as_of = valid.index[-1].date().isoformat()
+
+    from . import intl  # local import avoids a cycle (intl imports load, not alerts)
+
+    lines = ["🔔 ราคาทองวันนี้"]
+    xau, _, intl_thb = intl.fetch_live_intl()
+    if intl_thb:
+        lines.append(f"สากล real-time: ${xau:,.0f}/oz ≈ {intl_thb:,.0f} บาท/บาททอง")
+    buy_in = _latest_buy_in(sb)
+    if buy_in:
+        lines.append(f"ราคาสมาคมฯ (ขายได้จริง): {buy_in:,.0f} บาท/บาททอง")
+    lines.append(f"คะแนนสัญญาณ {score:.0f}/100 — {_VERDICT_TH.get(verdict, verdict)}")
+    if extra:
+        lines.append(extra)
+    lines.append(f"ข้อมูล ณ {as_of}")
+    lines.append(f"ดูรายละเอียด: {settings.dashboard_url}")
+
+    if send_line_broadcast("\n".join(lines)):
+        state.set_alert_state(sb, verdict, as_of, _LEVEL.get(verdict, 0))
+        return True
+    return False
+
+
 def alert_on_transition(sb, scores, *, buy_in: float | None = None, extra: str = "") -> bool:
     """Broadcast iff the latest verdict differs from the last one we alerted on.
 
