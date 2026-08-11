@@ -4,27 +4,17 @@ name: compute-signals
 # which is public — etl.compute fetches it itself (intl.fetch_live_intl). So this job is
 # self-sufficient: no phone required to keep the dashboard score fresh.
 #
-# LINE schedule (Asia/Bangkok = UTC+7, no DST). Digests are set EARLY (06:00 / 15:00 ICT)
-# so GitHub's scheduler delay lands them before the times Poom actually watches (~07:00 /
-# ~16:00). Each slot has a PRIMARY + BACKUP trigger and the script dedups per (Bangkok
-# day, slot), so exactly one digest lands even if a run slips or is dropped. 23:00 UTC is
-# deliberately off the 00:00-UTC midnight rush (the most delayed slot).
-#   06:00 ICT digest  <- 23:00 UTC (primary) + 23:20 UTC (backup)   [--digest am]
-#   15:00 ICT digest  <- 08:00 UTC (primary) + 08:20 UTC (backup)   [--digest pm]
-#   13:00 / 01:00 ICT <- 06:00 / 18:00 UTC   compute + transition alert only
+# This job now owns COMPUTE + event TRANSITION alerts only. The fixed-time daily DIGEST
+# (06:00 / 15:00 ICT) moved to a Cloudflare Worker (worker/) because CF cron is precise to
+# the second, unlike GitHub's scheduler. The two compute runs at 22:30 / 07:30 UTC refresh
+# the score ~30 min BEFORE the Worker reads it for each digest.
+# Times are UTC (Asia/Bangkok = UTC+7, no DST).
 on:
   schedule:
-    - cron: "0 23 * * *"    # 06:00 ICT — digest (primary)
-    - cron: "20 23 * * *"   # 06:20 ICT — digest (backup)
-    - cron: "0 8 * * *"     # 15:00 ICT — digest (primary)
-    - cron: "20 8 * * *"    # 15:20 ICT — digest (backup)
-    - cron: "0 6,18 * * *"  # 13:00 / 01:00 ICT — compute + transition check
-  workflow_dispatch:
-    inputs:
-      digest:
-        description: "also send the daily digest LINE now (manual test)"
-        type: boolean
-        default: false
+    - cron: "30 22 * * *"      # 05:30 ICT — refresh before the 06:00 Worker digest
+    - cron: "30 7 * * *"       # 14:30 ICT — refresh before the 15:00 Worker digest
+    - cron: "0 6,12,18 * * *"  # 13:00 / 19:00 / 01:00 ICT — freshness + transition alerts
+  workflow_dispatch: {}
 
 jobs:
   compute:
@@ -45,20 +35,6 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          # This cron owns LINE messaging. Without the token send_line_broadcast() no-ops,
-          # so both the digest and transition alerts silently never fire. Set the repo secret.
+          # Needed for TRANSITION alerts (verdict changes). The daily digest is the Worker's job.
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-        # Map each schedule to its digest slot; the script's per-slot dedup makes the backup
-        # trigger a no-op when the primary already sent. Non-digest schedules only alert on a
-        # verdict transition.
-        run: |
-          S="${{ github.event.schedule }}"
-          if [ "$S" = "0 23 * * *" ] || [ "$S" = "20 23 * * *" ]; then
-            uv run python -m etl.compute --digest am
-          elif [ "$S" = "0 8 * * *" ] || [ "$S" = "20 8 * * *" ]; then
-            uv run python -m etl.compute --digest pm
-          elif [ "${{ inputs.digest }}" = "true" ]; then
-            uv run python -m etl.compute --digest now
-          else
-            uv run python -m etl.compute
-          fi
+        run: uv run python -m etl.compute

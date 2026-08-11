@@ -1,0 +1,15 @@
+name = "gold-digest"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+workers_dev = true
+
+# Cloudflare cron fires within seconds of schedule (unlike GitHub Actions). UTC.
+#   23:00 UTC = 06:00 ICT   |   08:00 UTC = 15:00 ICT   (Asia/Bangkok = UTC+7, no DST)
+[triggers]
+crons = ["0 23 * * *", "0 8 * * *"]
+
+[vars]
+DASHBOARD_URL = "https://gold-price-gamma.vercel.app"
+
+# Secrets (set with `wrangler secret put`, never in this file):
+#   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, LINE_CHANNEL_ACCESS_TOKEN, TRIGGER_KEY
