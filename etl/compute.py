@@ -24,7 +24,7 @@ from . import advice, alerts, indicators, intl, load, signals, state
 from .config import settings
 
 
-def main(force_full: bool = False, digest: bool = False) -> None:
+def main(force_full: bool = False, digest: str = "") -> None:
     if not settings.has_supabase:
         print("No Supabase env; nothing to compute.")
         return
@@ -50,8 +50,20 @@ def main(force_full: bool = False, digest: bool = False) -> None:
     advice.topup_premium(sb)                        # refresh local-premium z for the dashboard
     extra = advice.advice_line(advice.build_advice(sb))  # personal campaign overlay for the message
     if digest:
-        sent = alerts.send_daily_digest(sb, scores, extra=extra)
-        line = "LINE daily digest sent." if sent else "digest NOT sent (no LINE token)."
+        # ONCE-PER-SLOT dedup: each target time (am=07:00, pm=16:00 ICT) has a primary +
+        # backup cron trigger, so a delayed/dropped GitHub run still lands one digest near
+        # the target. The dedup key (UTC date + slot) makes the backup a no-op if the
+        # primary already sent. 'now' is a manual test — always sends, never recorded.
+        import datetime as _dt
+        key = f"{_dt.datetime.now(_dt.timezone.utc).date().isoformat()}|{digest}"
+        already = state.get_state(sb, "last_digest")
+        if digest in ("am", "pm") and already and already.get("text") == key:
+            sent, line = False, f"digest {digest} already sent today; skipped (backup no-op)."
+        else:
+            sent = alerts.send_daily_digest(sb, scores, extra=extra)
+            if sent and digest in ("am", "pm"):
+                state.set_state(sb, "last_digest", text=key)
+            line = f"LINE daily digest ({digest}) sent." if sent else "digest NOT sent (no LINE token)."
     else:
         sent = alerts.alert_on_transition(sb, scores, extra=extra)
         line = "LINE transition alert sent." if sent else "No alert."
@@ -67,6 +79,7 @@ def main(force_full: bool = False, digest: bool = False) -> None:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true", help="force a full-history rewrite of signals_daily")
-    ap.add_argument("--digest", action="store_true", help="send the fixed-time daily digest LINE (07:00/16:00 runs)")
+    ap.add_argument("--digest", choices=["am", "pm", "now"], default="",
+                    help="send the daily digest LINE for a slot (am=07:00, pm=16:00 ICT; now=manual, no dedup)")
     args = ap.parse_args()
     main(force_full=args.full, digest=args.digest)
