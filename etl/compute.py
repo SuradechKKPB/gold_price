@@ -55,7 +55,8 @@ def main(force_full: bool = False, digest: str = "") -> None:
         # the target. The dedup key (UTC date + slot) makes the backup a no-op if the
         # primary already sent. 'now' is a manual test — always sends, never recorded.
         import datetime as _dt
-        key = f"{_dt.datetime.now(_dt.timezone.utc).date().isoformat()}|{digest}"
+        _bkk = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=7))).date().isoformat()  # digest "day" = Bangkok day
+        key = f"{_bkk}|{digest}"
         already = state.get_state(sb, "last_digest")
         if digest in ("am", "pm") and already and already.get("text") == key:
             sent, line = False, f"digest {digest} already sent today; skipped (backup no-op)."
