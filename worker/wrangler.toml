@@ -4,7 +4,10 @@ compatibility_date = "2024-11-01"
 workers_dev = true
 
 # Cloudflare cron fires within seconds of schedule (unlike GitHub Actions). UTC.
-#   23:00 UTC = 06:00 ICT   |   08:00 UTC = 15:00 ICT   (Asia/Bangkok = UTC+7, no DST)
+#   digests: 23:00 UTC = 06:00 ICT | 08:00 UTC = 15:00 ICT (Asia/Bangkok = UTC+7)
+# Each digest run calls syncGta() first, so the "ราคาสมาคม" line is a live GTA quote.
+# (An hourly intraday sync would need a 3rd cron, but this account is at the Workers-Free
+# limit of 5 cron triggers; 2x/day GTA refresh already beats the retired phone's ~1x/day.)
 [triggers]
 crons = ["0 23 * * *", "0 8 * * *"]
 
