@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     # Alerts (event-driven on verdict transitions; see etl/alerts.py — no numeric threshold)
     line_channel_access_token: str = ""
+    line_channel_access_token_2: str = ""  # fallback OA, used when the primary hits its monthly quota
     dashboard_url: str = "https://gold-price-gamma.vercel.app"
 
     # Holding config — drives the headline THB figure and the backtest unit.

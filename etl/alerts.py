@@ -32,16 +32,24 @@ _LEVEL = {"hold": 0, "trim": 1, "sell_tranche": 2, "sell": 3}
 
 
 def send_line_broadcast(text: str) -> bool:
-    if not settings.line_channel_access_token:
+    """Broadcast with OA failover: primary OA first; if it fails (esp. 429 = the free
+    300-msg/month quota is exhausted), retry from the secondary OA. Two free OAs ≈ 600/mo."""
+    tokens = [t for t in (settings.line_channel_access_token, settings.line_channel_access_token_2) if t]
+    if not tokens:
         return False
-    resp = httpx.post(
-        LINE_BROADCAST,
-        headers={"Authorization": f"Bearer {settings.line_channel_access_token}"},
-        json={"messages": [{"type": "text", "text": text}]},
-        timeout=20,
-    )
-    resp.raise_for_status()
-    return True
+    for tok in tokens:
+        try:
+            resp = httpx.post(
+                LINE_BROADCAST,
+                headers={"Authorization": f"Bearer {tok}"},
+                json={"messages": [{"type": "text", "text": text}]},
+                timeout=20,
+            )
+            if resp.status_code < 300:
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
 
 
 def _latest_buy_in(sb) -> float | None:
