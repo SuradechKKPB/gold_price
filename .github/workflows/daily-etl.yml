@@ -37,4 +37,5 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           # Needed for TRANSITION alerts (verdict changes). The daily digest is the Worker's job.
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_CHANNEL_ACCESS_TOKEN_2: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN_2 }}  # fallback OA when primary quota is spent
         run: uv run python -m etl.compute

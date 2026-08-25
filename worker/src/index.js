@@ -96,15 +96,36 @@ async function buildMessage(env) {
   return lines.join("\n");
 }
 
+// Broadcast with OA failover: send from the primary OA; if it fails (esp. 429 = the free
+// 300-msg/month quota is exhausted), retry from the secondary OA. Two free OAs ≈ 600/mo.
+async function lineBroadcast(env, text) {
+  const body = JSON.stringify({ messages: [{ type: "text", text }] });
+  const tokens = [
+    ["primary", env.LINE_CHANNEL_ACCESS_TOKEN],
+    ["fallback", env.LINE_CHANNEL_ACCESS_TOKEN_2],
+  ].filter(([, t]) => t);
+  let last = { ok: false, oa: null, status: 0 };
+  for (const [oa, tok] of tokens) {
+    try {
+      const resp = await fetch("https://api.line.me/v2/bot/message/broadcast", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tok}`, "content-type": "application/json" },
+        body,
+      });
+      if (resp.ok) return { ok: true, oa, status: resp.status };
+      last = { ok: false, oa, status: resp.status };
+    } catch (e) {
+      last = { ok: false, oa, status: -1 };
+    }
+  }
+  return last;
+}
+
 async function sendDigest(env) {
   try { await syncGta(env); } catch (e) { /* market closed / GTA hiccup: fall back to latest stored price */ }
   const text = await buildMessage(env);
-  const resp = await fetch("https://api.line.me/v2/bot/message/broadcast", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}`, "content-type": "application/json" },
-    body: JSON.stringify({ messages: [{ type: "text", text }] }),
-  });
-  return { ok: resp.ok, status: resp.status, text };
+  const r = await lineBroadcast(env, text);
+  return { ...r, text };
 }
 
 const DIGEST_CRONS = new Set(["0 23 * * *", "0 8 * * *"]);
