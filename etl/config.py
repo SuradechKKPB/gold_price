@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     dashboard_url: str = "https://gold-price-gamma.vercel.app"
 
     # Holding config — drives the headline THB figure and the backtest unit.
-    gold_grams: float = 700.0
+    gold_grams: float = 900.0
     gold_type: str = "bar"          # bar = 96.5% ทองคำแท่ง
     bar_spread_thb: float = 200.0   # modeled buy-in = sell - spread when live bid unknown
 

@@ -22,6 +22,8 @@ Sources:
 
 from __future__ import annotations
 
+import datetime as dt
+
 import httpx
 import pandas as pd
 
@@ -127,15 +129,26 @@ def fetch_live_intl() -> tuple[float | None, float | None, float | None]:
     return xau, fx, (xau * fx * CONV if xau and fx else None)
 
 
+def bkk_today() -> pd.Timestamp:
+    """Today's Asia/Bangkok calendar date, as a tz-naive midnight Timestamp.
+
+    trade_date is defined as the BANGKOK calendar date (see 0001_init.sql). The cron runs
+    on UTC runners, and two of its five slots (22:30 and 18:00 UTC) fire at 05:30 and 01:00
+    ICT the NEXT Bangkok day — so a naive Timestamp.today() there stamps the row with
+    YESTERDAY's Bangkok date and silently overwrites that day's close with a price from the
+    following morning. That is a T+1 leak into a series the backtest assumes ends at T.
+    """
+    return pd.Timestamp(dt.datetime.now(dt.timezone(dt.timedelta(hours=7))).date())
+
+
 def topup_live(sb, trade_date=None) -> float | None:
     """Self-sufficient daily refresh: derive today's intl from the keyless world-price feeds
-    and upsert it, so the compute cron produces a fresh score even when the phone (which
-    supplies the association quote + spot) has not written today. Best-effort — returns the
-    value written, or None if the live fetch failed (caller falls back to phone data)."""
+    and upsert it, so the compute cron produces a fresh score for the current Bangkok trading
+    day. Best-effort — returns the value written, or None if the live fetch failed."""
     _, _, val = fetch_live_intl()
     if val is None:
         return None
-    d = (trade_date or pd.Timestamp.today().normalize()).date() if trade_date is None else pd.Timestamp(trade_date).date()
+    d = bkk_today().date() if trade_date is None else pd.Timestamp(trade_date).date()
     _upsert(sb, pd.Series({pd.Timestamp(d): val}), "live_api")
     return val
 
@@ -154,7 +167,7 @@ def topup_from_daily(sb, days: int = 21) -> int:
     NOTE (finalization): a recent day's value is the latest intraday snapshot, not the
     London PM fix. Re-running etl.intl.backfill from a residential IP overwrites the
     window with the true fix once available."""
-    cutoff = (pd.Timestamp.today().normalize() - pd.Timedelta(days=days)).date().isoformat()
+    cutoff = (bkk_today() - pd.Timedelta(days=days)).date().isoformat()
     rows = (
         sb.table("gold_price_daily")
         .select("trade_date,gold_spot_usd,baht_per_usd")

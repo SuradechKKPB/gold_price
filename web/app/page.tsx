@@ -26,7 +26,7 @@ const SIGNAL_LABELS: Record<string, string> = {
 };
 
 export default async function Page() {
-  const grams = Number(process.env.GOLD_GRAMS ?? 700);
+  const grams = Number(process.env.GOLD_GRAMS ?? 900);
   const bw = bahtWeight(grams);
   const showHolding = process.env.SHOW_HOLDING === "true"; // default: hide personal holding on the public page
 
