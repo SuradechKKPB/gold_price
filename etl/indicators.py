@@ -1,9 +1,13 @@
 """Technical indicators for sell-timing, computed in pandas (no TA-Lib).
 
 Horizon is 3-12 months, so trend/momentum indicators run on WEEKLY bars and are
-forward-filled back to daily. Everything is computed on the seller-relevant
-buy-in basis (bar sell-out minus the spread); the constant shift leaves all
-comparative signals unchanged but keeps overlay levels aligned to the bid price.
+forward-filled back to daily (ffill only looks backward, so no weekly bar reaches a
+day before it closed).
+
+`spread_thb` shifts the input onto a chosen price basis. Callers pass 0: the score reads
+the INTERNATIONAL THB series, which has no association bid/ask to subtract. The parameter
+survives for the association-quote path in etl.run, where the constant shift leaves every
+comparative signal unchanged but aligns overlay levels to the bid.
 """
 
 from __future__ import annotations

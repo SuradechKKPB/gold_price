@@ -1,10 +1,13 @@
-"""Daily ETL orchestrator — safe by design.
+"""Manual GTA ingest — no longer on any schedule.
 
-Gets today's GTA tick + (optionally) the /ohlc history. GTA blocks datacenter IPs
-(e.g. GitHub Actions) with 403; there is no reliable free fresh fallback, so if the
-live price can't be fetched — or looks implausible vs the last stored close — the
-run SKIPS cleanly (no DB write, no LINE alert) instead of corrupting data or firing
-a false signal. History lives in Supabase; the nightly run only needs today's tick.
+The Cloudflare Worker (worker/) now owns routine GTA ingest, because CF egress reaches
+goldtraders.or.th while GitHub/AWS datacenters get a 403. This module is kept as the
+hand-run path for a backfill or a one-off repair from a machine that can reach GTA; the
+scheduled pipeline is etl.compute.
+
+Safe by design: if the live price can't be fetched — or looks implausible vs the last
+stored close — the run SKIPS cleanly (no DB write, no LINE alert) rather than corrupting
+data or firing a false signal.
 """
 
 from __future__ import annotations

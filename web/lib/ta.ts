@@ -2,8 +2,13 @@ import type { PriceRow } from "./types";
 
 // Additional daily technical indicators for the dashboard, computed server-side from
 // the daily-updated price history. These are DISPLAY context (the calibrated 0-100
-// score lives in the Python engine). Buy-in basis throughout (bar_sell − spread).
-const BAR_SPREAD = 200;
+// score lives in the Python engine).
+//
+// `spread` shifts the series onto a chosen price basis. The dashboard passes 0 because it
+// feeds the INTERNATIONAL THB series, which carries no association bid/ask — the same
+// basis the Python score reads, so the panel and the score cannot disagree. It is required
+// rather than defaulted: a silent default here would put this panel on a different basis
+// from the score without anything visibly changing.
 
 export type State = "bear" | "warn" | "neutral" | "bull";
 export interface Indicator {
@@ -110,7 +115,7 @@ const sign = (n: number, d = 0) => (n >= 0 ? "+" : "") + fmt(n, d);
 
 // spread defaults to the association bid/ask (bar_sell − spread = buy-in basis); pass 0 for
 // the international series, where high/low/close are the same single world-price fix.
-export function computeTA(rows: PriceRow[], spread = BAR_SPREAD): { indicators: Indicator[]; levels: KeyLevel[] } {
+export function computeTA(rows: PriceRow[], spread: number): { indicators: Indicator[]; levels: KeyLevel[] } {
   const c = rows.map((r) => r.bar_buy_close);
   const h = rows.map((r) => r.bar_sell_high - spread);
   const l = rows.map((r) => r.bar_sell_low - spread);

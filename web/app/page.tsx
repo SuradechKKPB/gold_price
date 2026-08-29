@@ -26,7 +26,7 @@ const SIGNAL_LABELS: Record<string, string> = {
 };
 
 export default async function Page() {
-  const grams = Number(process.env.GOLD_GRAMS ?? 700);
+  const grams = Number(process.env.GOLD_GRAMS ?? 900);
   const bw = bahtWeight(grams);
   const showHolding = process.env.SHOW_HOLDING === "true"; // default: hide personal holding on the public page
 
@@ -53,6 +53,10 @@ export default async function Page() {
     : "";
 
   const priceSeries = intlPrices.map((r) => ({ time: r.trade_date, value: r.bar_buy_close }));
+  // Backtest span comes from the data, not a hardcoded year range that silently goes stale.
+  const btSpan = intlPrices.length
+    ? `${intlPrices[0].trade_date.slice(0, 4)}–${intlPrices[intlPrices.length - 1].trade_date.slice(0, 4)}`
+    : "";
   const ma200 = sma(intlPrices, 200);
   const dd = drawdown(intlPrices, "2011-01-01", "2014-12-31");
 
@@ -137,7 +141,7 @@ export default async function Page() {
         </p>
         <div style={{ display: "grid", gap: 16, marginTop: 14 }}>
           {[
-            { name: "คะแนนรวม", weight: "0–100", cur: signal?.sell_pressure, desc: "ภาพรวมแรงกดดันให้ขาย — เกณฑ์: ≥44 เริ่มลดพอร์ต · ≥52 ขายบางส่วน · ≥60 (พร้อมสัญญาณเบรกเทรนด์ ≥2 ตัว) ขายออก · verdict มี hysteresis กันสลับไปมา · หมายเหตุ: จาก backtest (fill วันถัดไป, เลือกเกณฑ์จากข้อมูลก่อนปี 2020) สัญญาณชนะการทยอยขาย DCA แค่ ~52–56% — ใช้เป็น ‘ตัวช่วยจับจังหวะ’ เสริม DCA ไม่ใช่ตัวชี้ขาด",
+            { name: "คะแนนรวม", weight: "0–100", cur: signal?.sell_pressure, desc: "ภาพรวมแรงกดดันให้ขาย — เกณฑ์: ≥44 เริ่มลดพอร์ต · ≥52 ขายบางส่วน · ≥60 (พร้อมสัญญาณเบรกเทรนด์ ≥2 ตัว) ขายออก · verdict มี hysteresis กันสลับไปมา · หมายเหตุสำคัญ: ข้อมูล 20 ปีมีกรอบเวลา 12 เดือนที่ไม่ทับซ้อนกันแค่ 23 กรอบ ซึ่งไม่พอจะพิสูจน์ว่าคะแนนนี้ชนะการทยอยขายแบบ DCA — ใช้เป็น ‘ตัวช่วยจับจังหวะ’ บนโครง DCA ไม่ใช่ตัวชี้ขาด",
               formula: signal
                 ? `= 0.40×${signal.trend_break.toFixed(0)} + 0.25×${signal.overbought.toFixed(0)} + 0.18×${signal.momentum.toFixed(0)} + 0.12×${signal.fa_score.toFixed(0)} + 0.05×${signal.seasonality.toFixed(0)} = ${signal.sell_pressure.toFixed(0)}`
                 : "= 0.40×เบรกเทรนด์ + 0.25×ซื้อมากเกินไป + 0.18×โมเมนตัม + 0.12×ดอลลาร์ + 0.05×ฤดูกาล" },
@@ -220,15 +224,17 @@ export default async function Page() {
       {/* Backtest */}
       <section className="panel" style={{ padding: 24, marginTop: 20 }}>
         <h2 className="serif" style={{ fontSize: 20, fontWeight: 500 }}>
-          ผลทดสอบย้อนหลัง — กรอบ 12 เดือน (ปี 2010–2026)
+          ผลทดสอบย้อนหลัง — กรอบ 12 เดือน{btSpan ? ` (ปี ${btSpan})` : ""}
         </h2>
         <p className="muted" style={{ fontSize: 13, marginTop: 6, lineHeight: 1.6 }}>
-          “จับยอด” = สัดส่วนของช่วงราคาที่ขายได้จริงในแต่ละกรอบเวลา ตลอด 16 ปีที่ทองเป็นขาขึ้น การ{" "}
-          <b style={{ color: "var(--text)" }}>ถือไว้</b> ให้ผลดีที่สุด — และคะแนนรวมของเราเป็นกฎ <i>เชิงรุก</i> ที่ดีที่สุด
-          เอาชนะการทยอยขายแบบ DCA ค่าเฉลี่ยดูเข้าข้างการถือ เพราะเทรนด์แทบไม่เคยพลิก คะแนนจะมีค่าจริงตอนที่เทรนด์กลับตัว
+          “จับยอด” = สัดส่วนของช่วงราคาที่ขายได้จริงในแต่ละกรอบเวลา ตลอดช่วงที่ทองเป็นขาขึ้น การ{" "}
+          <b style={{ color: "var(--text)" }}>ถือไว้</b> ให้ผลดีที่สุด เพราะเทรนด์แทบไม่เคยพลิก — คะแนนจะมีค่าจริงตอนที่เทรนด์กลับตัว
+          ซึ่งในข้อมูลชุดนี้เกิดขึ้นน้อยครั้งเกินกว่าจะวัดได้ · ตารางนี้จึงใช้ <i>เปรียบเทียบพฤติกรรม</i> ของแต่ละกฎ
+          ไม่ใช่ใช้จัดอันดับว่ากฎไหนดีกว่ากัน
         </p>
         <div className="muted mono" style={{ fontSize: 11, marginTop: 12 }}>
-          OOS = ทดสอบช่วงนอกตัวอย่าง (window เริ่มปี 2020) · กลยุทธ์ที่ทำได้ดีจริงควรชนะทั้งช่วงเต็มและ OOS
+          OOS = ทดสอบช่วงนอกตัวอย่าง (window เริ่มปี 2020) · ⚠️ ทุกกรอบเวลาในตารางทับซ้อนกัน ~99%
+          จำนวนตัวอย่างที่เป็นอิสระจริงมีแค่ 23 กรอบ — ส่วนต่างเล็กน้อยระหว่างแถวไม่มีนัยสำคัญ
         </div>
         <div style={{ marginTop: 10 }}>
           <BacktestTable runs={runs} />
@@ -336,8 +342,8 @@ export default async function Page() {
       </section>
 
       <footer className="muted" style={{ fontSize: 12, marginTop: 28, lineHeight: 1.6 }}>
-        ใช้เพื่อประกอบการตัดสินใจ ไม่ใช่คำแนะนำการลงทุน · สัญญาณคำนวณจากข้อมูลในอดีตแบบ in-sample (ช่วงเวลาทับซ้อน
-        ความเชื่อมั่นจึงกว้าง) · ผลในอดีตไม่รับประกันอนาคต · ฐานคะแนน: ราคาทองสากล (LBMA × USD/THB จาก ECB) · ราคารับซื้อจริง:
+        ใช้เพื่อประกอบการตัดสินใจ ไม่ใช่คำแนะนำการลงทุน · เกณฑ์คะแนนถูกตั้งจากการดูข้อมูลทั้งชุด ผลทดสอบย้อนหลัง
+        จึงเป็นขอบบน ไม่ใช่ผลที่คาดหวัง · ผลในอดีตไม่รับประกันอนาคต · ฐานคะแนน: ราคาทองสากล (LBMA × USD/THB จาก ECB) · ราคารับซื้อจริง:
         สมาคมค้าทองคำแห่งประเทศไทย · ข่าว: Google News · ปฏิทิน: ForexFactory
       </footer>
     </main>

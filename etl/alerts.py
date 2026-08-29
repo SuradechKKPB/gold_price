@@ -1,16 +1,16 @@
 """LINE push alerts on sell-pressure VERDICT TRANSITIONS.
 
-Two channels feed Poom's LINE, by design:
-  - the phone (joe-health phone_sync.py) sends a DAILY DIGEST every sync — "here is
-    today's price + the current verdict". Routine, fires whether or not anything moved.
-  - THIS module fires an EVENT alert only when the verdict CHANGES (hold→trim→
-    tranche→sell, or a downgrade), from the GitHub cron (etl.compute) that actually
-    runs on schedule. It dedups via etl.state so each transition pings exactly once,
-    not every 6h.
+Two senders feed the family's LINE, by design:
+  - the Cloudflare Worker (worker/) sends the fixed-time DAILY DIGEST at 06:00 / 15:00
+    ICT — routine, fires whether or not anything moved. It lives there because CF cron
+    is precise to the second while GitHub's scheduler can be 5-40 min late.
+  - THIS module fires an EVENT alert only when the verdict CHANGES (hold -> trim ->
+    tranche -> sell, or a downgrade), from the GitHub cron (etl.compute). It dedups via
+    etl.state so each transition pings exactly once, not once per cron run.
 
-The old maybe_alert (edge-triggered on a raw 50-crossing, called only from run.py
-which returns early whenever GTA 403s the datacenter) could never fire on the cron —
-so the automated system sent zero alerts. alert_on_transition replaces it.
+Quota is the binding constraint: broadcast bills per follower, and one free OA allows 300
+messages/month. send_line_broadcast therefore fails over to a second OA once the first is
+spent. Do not add a third sender here without recounting the monthly budget.
 """
 
 from __future__ import annotations
@@ -82,41 +82,6 @@ def _transition_message(prev: str, cur: str, score: float, buy_in: float | None,
     if extra:
         body += f"\n{extra}"
     return f"{body}\nดูรายละเอียด: {settings.dashboard_url}"
-
-
-def send_daily_digest(sb, scores, *, extra: str = "") -> bool:
-    """Fixed-time daily digest from the cron — sends EVERY time it's called, whether or not
-    the verdict moved (unlike alert_on_transition). Mirrors the phone's "ราคาทองวันนี้" card
-    so the GitHub cron can own the routine 07:00 / 16:00 ping without depending on the phone.
-    Also advances the alert state to the current verdict, so a same-run transition check does
-    not double-send."""
-    valid = scores.dropna(subset=["sell_pressure"])
-    if not len(valid):
-        return False
-    row = valid.iloc[-1]
-    verdict = row["verdict"]
-    score = float(row["sell_pressure"])
-    as_of = valid.index[-1].date().isoformat()
-
-    from . import intl  # local import avoids a cycle (intl imports load, not alerts)
-
-    lines = ["🔔 ราคาทองวันนี้"]
-    xau, _, intl_thb = intl.fetch_live_intl()
-    if intl_thb:
-        lines.append(f"สากล real-time: ${xau:,.0f}/oz ≈ {intl_thb:,.0f} บาท/บาททอง")
-    buy_in = _latest_buy_in(sb)
-    if buy_in:
-        lines.append(f"ราคาสมาคมฯ (ขายได้จริง): {buy_in:,.0f} บาท/บาททอง")
-    lines.append(f"คะแนนสัญญาณ {score:.0f}/100 — {_VERDICT_TH.get(verdict, verdict)}")
-    if extra:
-        lines.append(extra)
-    lines.append(f"ข้อมูล ณ {as_of}")
-    lines.append(f"ดูรายละเอียด: {settings.dashboard_url}")
-
-    if send_line_broadcast("\n".join(lines)):
-        state.set_alert_state(sb, verdict, as_of, _LEVEL.get(verdict, 0))
-        return True
-    return False
 
 
 def alert_on_transition(sb, scores, *, buy_in: float | None = None, extra: str = "") -> bool:

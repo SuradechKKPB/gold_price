@@ -15,4 +15,5 @@ crons = ["0 23 * * *", "0 8 * * *"]
 DASHBOARD_URL = "https://gold-price-gamma.vercel.app"
 
 # Secrets (set with `wrangler secret put`, never in this file):
-#   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, LINE_CHANNEL_ACCESS_TOKEN, TRIGGER_KEY
+#   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TRIGGER_KEY,
+#   LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_ACCESS_TOKEN_2  (failover OA)

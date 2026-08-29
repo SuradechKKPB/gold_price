@@ -3,8 +3,13 @@
 Trend-break-weighted by design: gold is in a strong secular uptrend where
 overbought/mean-reversion signals fire too early, so trailing-stop / trend-break
 exits dominate the score and correlated oscillators are collapsed into one
-overbought sub-score (not triple-counted). Thresholds here are sensible defaults;
-Phase 3 backtesting calibrates them for the "capture the high" objective.
+overbought sub-score (not triple-counted).
+
+CALIBRATION CAVEAT: the weights and the 44/52/60 cut-offs were chosen by inspecting the
+full 2006-2026 series, so they carry human look-ahead that no in-sample/out-of-sample
+split can undo. The mechanics below are strictly causal (verified by shock injection: no
+sub-score moves on a date before the shock), but the CONSTANTS have seen the whole tape.
+Treat any backtested edge as an upper bound.
 """
 
 from __future__ import annotations
@@ -31,13 +36,21 @@ PROX_KNEE = 0.06    # overbought is "near the high" within this drawdown, damped
 HYSTERESIS = 2.5    # verdict deadband (composite pts): sticky on the way down, no flip-flop
 
 # Verdict cut-offs for the peak-aware composite (price BASIS = international THB; see
-# etl/intl.py). Calibrated to the CLEAN score distribution (no look-ahead components):
-# trim ~p89, tranche ~p95, sell ~p99 (score max ~68). A laddered exit at these levels
-# fires on ~11% of days and 'sell' still requires n_trend>=2 (fresh break AND confirmed
-# bear). Honest caveat from the T+1, pre-2020-selected backtest: the timing edge over a
-# simple DCA-out is only ~52-56% of windows with a CI that brushes 50% — so this ladder
-# is a DCA backbone with signal acceleration, NOT a precise top-picker. Realised price is
-# the association bid (what Poom actually sells at); see backtest.py.
+# etl/intl.py). Set from percentiles of the CLEAN score distribution (no look-ahead
+# COMPONENTS): trim ~p89, tranche ~p95, sell ~p99 (score max ~68). A laddered exit at
+# these levels fires on ~11% of days and 'sell' still requires n_trend>=2 (fresh break
+# AND confirmed bear).
+#
+# Those percentiles are full-sample, so these three numbers are the single largest piece
+# of human look-ahead in the model — and backtest.LADDER_GRID then searches a grid
+# centred on them, which cannot un-see it.
+#
+# What the harness can actually say: on T+1 fills with pre-2020 selection the ladder beat
+# a plain DCA-out in 51-55% of windows depending on horizon. Those windows overlap ~99%
+# and the history holds only 23 INDEPENDENT 12-month windows (backtest.n_eff), so every
+# bootstrap CI spans 50% — [44-58] at 3m widening to [38-68] at 12m. There is no
+# measurable edge over DCA-out in either direction. Use this ladder as a DCA backbone
+# with signal acceleration, never as a top-picker. Realised price is the association bid.
 T_TRIM, T_TRANCHE, T_SELL = 44.0, 52.0, 60.0
 
 
@@ -287,3 +300,33 @@ def upsert_signals(sb, scores: pd.DataFrame) -> int:
     for i in range(0, len(records), 1000):
         sb.table("signals_daily").upsert(records[i : i + 1000], on_conflict="trade_date").execute()
     return len(records)
+
+
+def prune_signals(sb, scores: pd.DataFrame) -> int:
+    """Delete signals_daily rows the current formula did not produce. Full rewrites only.
+
+    SCORE_VERSION exists so the backtest never calibrates on a mixed-formula series, but
+    upsert alone could not deliver that: a full rewrite overwrote the dates the current
+    basis covers and left every other date untouched. Rows from the retired
+    association-price epoch therefore survived indefinitely — 1,159 of them when this was
+    found, 1,015 on weekends (the association quotes some Saturdays, LBMA never fixes),
+    and 1,156 of the backtest's 6,199 price days were reading one. Roughly a fifth of the
+    scored history the harness measured belonged to a formula that no longer exists.
+
+    A row with no basis in the current series cannot be recomputed and is not evidence of
+    anything, so removing it loses nothing. Called only on the full-rewrite path, where
+    `scores` is by definition the complete current history.
+    """
+    keep = {idx.date().isoformat() for idx in scores.index}
+    have: list[str] = []
+    page = 0
+    while True:
+        res = sb.table("signals_daily").select("trade_date").order("trade_date").range(page * 1000, page * 1000 + 999).execute()
+        have.extend(r["trade_date"] for r in res.data)
+        if len(res.data) < 1000:
+            break
+        page += 1
+    stale = sorted(set(have) - keep)
+    for i in range(0, len(stale), 200):
+        sb.table("signals_daily").delete().in_("trade_date", stale[i : i + 200]).execute()
+    return len(stale)

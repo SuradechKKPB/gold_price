@@ -4,10 +4,13 @@
 // (goldtraders.or.th) — the latter 403s GitHub/AWS datacenters but not Cloudflare, so this
 // Worker fully retires the phone for gold:
 //   - syncGta(): pull GTA /Latest (association bid/ask + spot + fx), upsert to Supabase, so
-//     the dashboard + the digest's "ราคาสมาคม (ขายได้จริง)" line stay fresh. Runs hourly
-//     during Thai market hours + at each digest.
+//     the dashboard + the digest's "ราคาสมาคม (ขายได้จริง)" line stay fresh.
 //   - sendDigest(): the fixed-time LINE card (06:00 / 15:00 ICT), precise to the second.
 // Heavy scoring stays in Python on GitHub; this is pure fetch.
+//
+// The association price refreshes exactly twice a day, once inside each digest run. An
+// hourly intraday sync would need a third cron trigger and this account is at the
+// Workers-Free ceiling of five, so every scheduled invocation here IS a digest.
 
 const CONV = (15.244 / 31.1034768) * 0.965; // THB per baht-weight of 96.5% bar, per XAU×USDTHB
 const VERDICT_TH = { hold: "ถือไว้", trim: "ลดพอร์ตเล็กน้อย", sell_tranche: "ขายบางส่วน", sell: "ขายออก" };
@@ -38,7 +41,7 @@ async function supaUpsert(env, table, rows, onConflict) {
 }
 
 // Fetch GTA /Latest and upsert the tick + today's daily row (source 'cf_gta'), preserving
-// the intraday open and true high/low across the hourly syncs. Returns the fresh quote.
+// the intraday open and true high/low across the day's syncs. Returns the fresh quote.
 async function syncGta(env) {
   const d = await jget("https://www.goldtraders.or.th/api/GoldPrices/Latest", { headers: GTA_HEADERS });
   const asTime = d.asTime; // "YYYY-MM-DDTHH:MM:SS" Bangkok wall-clock
@@ -128,22 +131,20 @@ async function sendDigest(env) {
   return { ...r, text };
 }
 
-const DIGEST_CRONS = new Set(["0 23 * * *", "0 8 * * *"]);
-
 export default {
+  // Both crons are digests (see the header note on the 5-trigger ceiling). syncGta runs
+  // inside sendDigest, so the association price is live in every card.
   async scheduled(event, env, ctx) {
-    if (DIGEST_CRONS.has(event.cron)) {
-      ctx.waitUntil(sendDigest(env));         // syncGta runs inside sendDigest first
-    } else {
-      ctx.waitUntil(syncGta(env).catch(() => {})); // hourly: just keep the association price fresh
-    }
+    ctx.waitUntil(sendDigest(env));
   },
-  // Manual: /preview?key= (show text) · /send?key= (send now) · /sync?key= (pull GTA now) · /gta?key= (raw)
+  // Manual: /preview?key= (render the card WITHOUT sending) · /sync?key= (pull GTA now) ·
+  // /gta?key= (raw upstream response). There is deliberately no send-now route: broadcast
+  // bills per follower against a 300/month free quota, so an endpoint that spends it on
+  // every request is a liability. /preview covers testing; the cron owns sending.
   async fetch(req, env) {
     const url = new URL(req.url);
     const ok = url.searchParams.get("key") && url.searchParams.get("key") === env.TRIGGER_KEY;
     if (url.pathname === "/preview" && ok) return new Response(await buildMessage(env), { headers: { "content-type": "text/plain; charset=utf-8" } });
-    if (url.pathname === "/send" && ok) return new Response(JSON.stringify(await sendDigest(env), null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
     if (url.pathname === "/sync" && ok) {
       try { return new Response(JSON.stringify(await syncGta(env), null, 2), { headers: { "content-type": "application/json" } }); }
       catch (e) { return new Response(JSON.stringify({ error: String(e) }), { status: 200 }); }
@@ -154,6 +155,6 @@ export default {
         return new Response(JSON.stringify({ status: r.status, snippet: (await r.text()).slice(0, 300) }, null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
       } catch (e) { return new Response(JSON.stringify({ error: String(e) }), { status: 200 }); }
     }
-    return new Response("gold-digest worker: digests 23:00/08:00 UTC (06:00/15:00 ICT) + hourly GTA sync", { status: 200 });
+    return new Response("gold-digest worker: digests 23:00/08:00 UTC (06:00/15:00 ICT); each syncs GTA first", { status: 200 });
   },
 };

@@ -12,16 +12,13 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_service_role_key: str = ""
 
-    # External data
-    fred_api_key: str = ""
-
     # Alerts (event-driven on verdict transitions; see etl/alerts.py — no numeric threshold)
     line_channel_access_token: str = ""
     line_channel_access_token_2: str = ""  # fallback OA, used when the primary hits its monthly quota
     dashboard_url: str = "https://gold-price-gamma.vercel.app"
 
     # Holding config — drives the headline THB figure and the backtest unit.
-    gold_grams: float = 700.0
+    gold_grams: float = 900.0
     gold_type: str = "bar"          # bar = 96.5% ทองคำแท่ง
     bar_spread_thb: float = 200.0   # modeled buy-in = sell - spread when live bid unknown
 
