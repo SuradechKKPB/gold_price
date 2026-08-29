@@ -12,9 +12,6 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_service_role_key: str = ""
 
-    # External data
-    fred_api_key: str = ""
-
     # Alerts (event-driven on verdict transitions; see etl/alerts.py — no numeric threshold)
     line_channel_access_token: str = ""
     line_channel_access_token_2: str = ""  # fallback OA, used when the primary hits its monthly quota

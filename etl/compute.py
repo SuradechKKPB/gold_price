@@ -1,19 +1,21 @@
-"""Compute-only: recompute the sell-pressure signals from the price history that
-already lives in Supabase. Touches ONLY Supabase — never GTA — so it runs fine on
-GitHub Actions, where GTA's 403 blocks the live fetch. This is the ONLY job on the
-6-hourly cron, so it also owns event alerting.
+"""Compute-only: recompute the sell-pressure signals from the price history that lives in
+Supabase, plus a live top-up of the world price. Never touches GTA, so it runs fine on
+GitHub Actions where GTA 403s datacenter IPs. This is the only job on the cron, so it also
+owns event alerting.
 
 The score's price BASIS is the international (world) gold price in THB, not the Thai
-association quote (see etl/intl.py for why). The phone writes goldSpot + bahtPerUSD on
-every sync, so intl.topup_from_daily derives the freshest days with no external call,
-keeping this cron self-sufficient. The association price stays the realized/displayed
-number elsewhere (dashboard headline, backtest realized price).
+association quote (see etl/intl.py for why). intl.topup_live fetches that from keyless
+world feeds that answer from any IP, so this job is self-sufficient — no phone, no GTA.
+The association price stays the realized/displayed number elsewhere (dashboard headline,
+digest body, backtest realized price).
 
 Housekeeping behaviours that make the pipeline honest:
-  - AUTO-HEAL: if the score formula version changed since signals_daily was last
-    written, rewrite the WHOLE history so the backtest sees a single formula epoch.
-  - LINE: --digest sends a fixed-time daily card (07:00 / 16:00 ICT runs, always);
-    other runs only fire an EVENT ping on a verdict transition (dedup via etl.state).
+  - AUTO-HEAL: if the score formula version changed since signals_daily was last written,
+    rewrite the WHOLE history so the backtest sees a single formula epoch.
+  - LINE: fires an EVENT ping only on a verdict transition, deduped via etl.state. The
+    fixed-time daily digest belongs to the Cloudflare Worker (worker/), whose cron is
+    precise to the second; keeping a second digest sender here would double-spend a LINE
+    quota that is already the binding constraint.
 """
 
 from __future__ import annotations
@@ -24,14 +26,14 @@ from . import advice, alerts, indicators, intl, load, signals, state
 from .config import settings
 
 
-def main(force_full: bool = False, digest: str = "") -> None:
+def main(force_full: bool = False) -> None:
     if not settings.has_supabase:
         print("No Supabase env; nothing to compute.")
         return
     sb = load.client()
-    intl.topup_from_daily(sb)                # recent intl from phone-written spot/fx (if any)
-    live = intl.topup_live(sb)               # SELF-SUFFICIENT: today's intl from keyless world feeds,
-    print(f"live intl today: {live:,.0f}" if live else "live intl fetch failed (using phone data)")
+    intl.topup_from_daily(sb)                # recent intl re-derived from stored spot/fx
+    live = intl.topup_live(sb)               # SELF-SUFFICIENT: today's intl from keyless world feeds
+    print(f"live intl today: {live:,.0f}" if live else "live intl fetch failed (using stored data)")
     daily = intl.load_intl_daily(sb)         # world gold in THB (96.5% basis), daily OHLC
     ind = indicators.build(daily, 0.0)       # no association bid/ask spread on the world price
     dxy = load.fetch_macro(sb, "dxy")
@@ -49,25 +51,8 @@ def main(force_full: bool = False, digest: str = "") -> None:
 
     advice.topup_premium(sb)                        # refresh local-premium z for the dashboard
     extra = advice.advice_line(advice.build_advice(sb))  # personal campaign overlay for the message
-    if digest:
-        # ONCE-PER-SLOT dedup: each target time (am=07:00, pm=16:00 ICT) has a primary +
-        # backup cron trigger, so a delayed/dropped GitHub run still lands one digest near
-        # the target. The dedup key (UTC date + slot) makes the backup a no-op if the
-        # primary already sent. 'now' is a manual test — always sends, never recorded.
-        import datetime as _dt
-        _bkk = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=7))).date().isoformat()  # digest "day" = Bangkok day
-        key = f"{_bkk}|{digest}"
-        already = state.get_state(sb, "last_digest")
-        if digest in ("am", "pm") and already and already.get("text") == key:
-            sent, line = False, f"digest {digest} already sent today; skipped (backup no-op)."
-        else:
-            sent = alerts.send_daily_digest(sb, scores, extra=extra)
-            if sent and digest in ("am", "pm"):
-                state.set_state(sb, "last_digest", text=key)
-            line = f"LINE daily digest ({digest}) sent." if sent else "digest NOT sent (no LINE token)."
-    else:
-        sent = alerts.alert_on_transition(sb, scores, extra=extra)
-        line = "LINE transition alert sent." if sent else "No alert."
+    sent = alerts.alert_on_transition(sb, scores, extra=extra)
+    line = "LINE transition alert sent." if sent else "No alert."
 
     print(
         f"Recomputed {len(scores)} intl scores; wrote {n} rows "
@@ -80,7 +65,5 @@ def main(force_full: bool = False, digest: str = "") -> None:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true", help="force a full-history rewrite of signals_daily")
-    ap.add_argument("--digest", choices=["am", "pm", "now"], default="",
-                    help="send the daily digest LINE for a slot (am=07:00, pm=16:00 ICT; now=manual, no dedup)")
     args = ap.parse_args()
-    main(force_full=args.full, digest=args.digest)
+    main(force_full=args.full)
