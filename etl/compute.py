@@ -33,7 +33,9 @@ def main(force_full: bool = False) -> None:
     sb = load.client()
     intl.topup_from_daily(sb)                # recent intl re-derived from stored spot/fx
     live = intl.topup_live(sb)               # SELF-SUFFICIENT: today's intl from keyless world feeds
-    print(f"live intl today: {live:,.0f}" if live else "live intl fetch failed (using stored data)")
+    # None is routine, not an error: weekends and rejected suspect quotes both land here,
+    # and the right response to both is to score the last real bar. topup_live says why.
+    print(f"live intl today: {live:,.0f}" if live else "no live bar written — scoring the last stored close.")
     daily = intl.load_intl_daily(sb)         # world gold in THB (96.5% basis), daily OHLC
     ind = indicators.build(daily, 0.0)       # no association bid/ask spread on the world price
     dxy = load.fetch_macro(sb, "dxy")
@@ -46,7 +48,11 @@ def main(force_full: bool = False) -> None:
     full = force_full or stored != signals.SCORE_VERSION
     to_write = scores if full else scores.tail(30)
     n = signals.upsert_signals(sb, to_write)
+    pruned = 0
     if full:
+        # Upsert alone cannot deliver a single-epoch history: it rewrites the dates the
+        # current basis covers and silently leaves every other date on its old formula.
+        pruned = signals.prune_signals(sb, scores)
         state.set_score_version(sb, signals.SCORE_VERSION)
 
     advice.topup_premium(sb)                        # refresh local-premium z for the dashboard
@@ -56,7 +62,7 @@ def main(force_full: bool = False) -> None:
 
     print(
         f"Recomputed {len(scores)} intl scores; wrote {n} rows "
-        f"({'FULL backfill v' + str(signals.SCORE_VERSION) if full else 'tail-30'}). "
+        f"({'FULL backfill v' + str(signals.SCORE_VERSION) + f', pruned {pruned} stale' if full else 'tail-30'}). "
         f"Latest {latest.name.date()}: {latest['sell_pressure']:.0f}/100 -> {latest['verdict']} "
         f"({latest['active_signals']}). {line}"
     )

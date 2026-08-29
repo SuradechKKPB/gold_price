@@ -146,14 +146,72 @@ def bkk_today() -> pd.Timestamp:
     return pd.Timestamp(dt.datetime.now(dt.timezone(dt.timedelta(hours=7))).date())
 
 
+# A live quote this far from the last stored close is treated as suspect and must be
+# corroborated by the independent LBMA source before it is written. Daily moves have a
+# ~1.1% standard deviation, so 4% is ~3.6 sigma: rare enough that verification costs
+# nothing, loose enough that ordinary volatility never trips it.
+SUSPECT_MOVE = 0.04
+# Two sources are considered to agree within this band. Wider than a fix-vs-spot timing
+# gap, far narrower than the bad-feed errors this is here to catch.
+AGREE_BAND = 0.02
+
+
+def _last_stored(sb) -> float | None:
+    res = (
+        sb.table("macro_daily")
+        .select("value")
+        .eq("series", SERIES)
+        .order("trade_date", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return float(res.data[0]["value"]) if res.data and res.data[0].get("value") is not None else None
+
+
 def topup_live(sb, trade_date=None) -> float | None:
     """Self-sufficient daily refresh: derive today's intl from the keyless world-price feeds
     and upsert it, so the compute cron produces a fresh score for the current Bangkok trading
-    day. Best-effort — returns the value written, or None if the live fetch failed."""
-    _, _, val = fetch_live_intl()
+    day. Returns the value written, or None if nothing was written.
+
+    Two guards, both learned the hard way. On Saturday 2026-08-29 gold-api.com served a thin
+    weekend quote 2.3% below Friday's LBMA fix and 3.2% below Friday's GTA spot. It was
+    written as that day's "close", and the score read the phantom drop as a fresh trailing
+    break. Markets were shut; no such move happened. Had the composite been sitting near a
+    threshold, that would have broadcast a fabricated sell signal to the family.
+
+      1. WEEKEND: no fix is published and quotes are thin, so Sat/Sun are skipped outright.
+         The score simply carries Friday's bar, which is what actually happened.
+      2. CORROBORATION: a move larger than SUSPECT_MOVE against the last stored close is
+         written only if the independent LBMA series agrees within AGREE_BAND. This is
+         deliberately NOT a magnitude cap — a genuine crash is exactly what this tool
+         exists to catch, and a cap would go blind during the one event that matters.
+         Disagreement means one feed is broken, and then writing nothing beats guessing.
+    """
+    d = bkk_today().date() if trade_date is None else pd.Timestamp(trade_date).date()
+    if d.weekday() >= 5:
+        print(f"topup_live: {d} is a {d.strftime('%A')} — no fix published, skipping.")
+        return None
+
+    xau, fx, val = fetch_live_intl()
     if val is None:
         return None
-    d = bkk_today().date() if trade_date is None else pd.Timestamp(trade_date).date()
+
+    last = _last_stored(sb)
+    if last and abs(val / last - 1.0) > SUSPECT_MOVE:
+        move = (val / last - 1.0) * 100
+        try:
+            ref = float(_lbma_usd().iloc[-1]) * fx * CONV
+        except Exception:  # noqa: BLE001
+            ref = None
+        if ref is None or abs(val / ref - 1.0) > AGREE_BAND:
+            got = f"{ref:,.0f}" if ref else "unavailable"
+            print(
+                f"topup_live: REJECTED {val:,.0f} for {d} ({move:+.1f}% vs last close "
+                f"{last:,.0f}); LBMA cross-check says {got}. Suspect feed, nothing written."
+            )
+            return None
+        print(f"topup_live: {move:+.1f}% move on {d} corroborated by LBMA — writing.")
+
     _upsert(sb, pd.Series({pd.Timestamp(d): val}), "live_api")
     return val
 
@@ -189,7 +247,11 @@ def topup_from_daily(sb, days: int = 21) -> int:
     ser = pd.Series(
         {pd.Timestamp(r["trade_date"]): float(r["gold_spot_usd"]) * float(r["baht_per_usd"]) * CONV for r in rows}
     )
-    return _upsert(sb, ser, "phone_spot")
+    # Thai dealers quote on some Saturdays, LBMA never fixes then. Keeping those rows would
+    # splice weekend bars into a weekday fix series and hand the indicators a bar the world
+    # market never printed — see the topup_live docstring.
+    ser = ser[ser.index.dayofweek < 5]
+    return _upsert(sb, ser, "gta_spot") if len(ser) else 0
 
 
 def upsert_today(sb, trade_date, spot_usd: float, baht_per_usd: float) -> float:

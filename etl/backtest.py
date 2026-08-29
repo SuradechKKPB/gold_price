@@ -224,10 +224,9 @@ def n_eff(n_windows: int, horizon: int) -> int:
 
     _eval samples a window every STEP=3 trading days, so a 12-month horizon yields ~1,400
     windows that share ~99% of their data. The information content is the number of
-    disjoint windows the history actually contains — ~19 for a 12-month horizon over 19
-    years. Every interval reported here should be read against this number, not the
-    window count: at n_eff=19 a win rate of 0.55 carries a binomial CI of roughly
-    0.33-0.77, which does not separate from 0.50.
+    disjoint windows the history actually contains — 23 for a 12-month horizon. Every interval reported here should be read against this number, not the
+    window count: at n_eff=23 a win rate of 0.52 carries a bootstrap CI of
+    0.38-0.68, which does not separate from 0.50.
     """
     return max(1, round(n_windows * STEP / horizon))
 
@@ -376,8 +375,8 @@ def main() -> None:
         sc_s = f"T={d['best_score_t']} {d['score_is']*100:.0f}%/{sc_oos} (trig {d['score_trigger']*100:.0f}%)"
         print(f"{h:>7} | {d['n_eff']:>5} | {d['dca_thb']:>10,} | {lad_s:>52} | {sc_s:>36}")
     print(f"\nWrote {s['_counts']['runs']} runs, {s['_counts']['windows']} windows. Selection on pre-{OOS_START.year} capture; OOS = starts >= {OOS_START.year}.")
-    print("n_eff = INDEPENDENT (non-overlapping) windows. At n_eff~19 a win rate of 0.55 has a\n"
-          "binomial CI of roughly 0.33-0.77 — this harness cannot establish an edge over DCA-out.")
+    print("n_eff = INDEPENDENT (non-overlapping) windows. Every win-vs-DCA CI above spans 50%,\n"
+          "so this harness cannot establish an edge over DCA-out in either direction.")
 
 
 if __name__ == "__main__":

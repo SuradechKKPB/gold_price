@@ -12,10 +12,11 @@ dashboard + LINE notifications.
 > 44/52/60 cut-offs were chosen while looking at the full 2006–2026 series, so any
 > backtested edge is an **upper bound**, not an expectation.
 >
-> On T+1 fills with pre-2020 selection the ladder beat a plain DCA-out in ~54% of windows.
-> Those windows overlap ~99%: the history holds only **~17 independent 12-month windows**,
-> at which a 0.54 win rate carries a binomial CI of roughly **0.33–0.77**. There is **no
-> measurable edge over DCA-out in either direction.** Treat the score as a DCA accelerator
+> On T+1 fills with pre-2020 selection the ladder beat a plain DCA-out in **51–55%** of
+> windows depending on horizon. Those windows overlap ~99%: the history holds only **23
+> independent 12-month windows**, and every bootstrap CI spans 50% — `[44–58]` at 3m
+> widening to `[38–68]` at 12m. There is **no measurable edge over DCA-out in either
+> direction.** Treat the score as a DCA accelerator
 > and a context signal. Do not cite the old "82% OOS / beats DCA 63%" numbers, and do not
 > cite "52–56%" either — the first was inflated by look-ahead and same-day fills, the
 > second by a bootstrap whose intervals were too narrow (see §11).

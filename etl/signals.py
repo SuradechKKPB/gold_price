@@ -46,11 +46,11 @@ HYSTERESIS = 2.5    # verdict deadband (composite pts): sticky on the way down, 
 # centred on them, which cannot un-see it.
 #
 # What the harness can actually say: on T+1 fills with pre-2020 selection the ladder beat
-# a plain DCA-out in ~54% of windows, but those windows overlap ~99% and the history holds
-# only ~17 INDEPENDENT 12-month windows (backtest.n_eff). At n=17 that win rate carries a
-# binomial CI of roughly 0.33-0.77. There is no measurable edge over DCA-out in either
-# direction. Use this ladder as a DCA backbone with signal acceleration, never as a
-# top-picker. Realised price is the association bid; see backtest.py.
+# a plain DCA-out in 51-55% of windows depending on horizon. Those windows overlap ~99%
+# and the history holds only 23 INDEPENDENT 12-month windows (backtest.n_eff), so every
+# bootstrap CI spans 50% — [44-58] at 3m widening to [38-68] at 12m. There is no
+# measurable edge over DCA-out in either direction. Use this ladder as a DCA backbone
+# with signal acceleration, never as a top-picker. Realised price is the association bid.
 T_TRIM, T_TRANCHE, T_SELL = 44.0, 52.0, 60.0
 
 
@@ -300,3 +300,33 @@ def upsert_signals(sb, scores: pd.DataFrame) -> int:
     for i in range(0, len(records), 1000):
         sb.table("signals_daily").upsert(records[i : i + 1000], on_conflict="trade_date").execute()
     return len(records)
+
+
+def prune_signals(sb, scores: pd.DataFrame) -> int:
+    """Delete signals_daily rows the current formula did not produce. Full rewrites only.
+
+    SCORE_VERSION exists so the backtest never calibrates on a mixed-formula series, but
+    upsert alone could not deliver that: a full rewrite overwrote the dates the current
+    basis covers and left every other date untouched. Rows from the retired
+    association-price epoch therefore survived indefinitely — 1,159 of them when this was
+    found, 1,015 on weekends (the association quotes some Saturdays, LBMA never fixes),
+    and 1,156 of the backtest's 6,199 price days were reading one. Roughly a fifth of the
+    scored history the harness measured belonged to a formula that no longer exists.
+
+    A row with no basis in the current series cannot be recomputed and is not evidence of
+    anything, so removing it loses nothing. Called only on the full-rewrite path, where
+    `scores` is by definition the complete current history.
+    """
+    keep = {idx.date().isoformat() for idx in scores.index}
+    have: list[str] = []
+    page = 0
+    while True:
+        res = sb.table("signals_daily").select("trade_date").order("trade_date").range(page * 1000, page * 1000 + 999).execute()
+        have.extend(r["trade_date"] for r in res.data)
+        if len(res.data) < 1000:
+            break
+        page += 1
+    stale = sorted(set(have) - keep)
+    for i in range(0, len(stale), 200):
+        sb.table("signals_daily").delete().in_("trade_date", stale[i : i + 200]).execute()
+    return len(stale)
