@@ -3,8 +3,13 @@
 Trend-break-weighted by design: gold is in a strong secular uptrend where
 overbought/mean-reversion signals fire too early, so trailing-stop / trend-break
 exits dominate the score and correlated oscillators are collapsed into one
-overbought sub-score (not triple-counted). Thresholds here are sensible defaults;
-Phase 3 backtesting calibrates them for the "capture the high" objective.
+overbought sub-score (not triple-counted).
+
+CALIBRATION CAVEAT: the weights and the 44/52/60 cut-offs were chosen by inspecting the
+full 2006-2026 series, so they carry human look-ahead that no in-sample/out-of-sample
+split can undo. The mechanics below are strictly causal (verified by shock injection: no
+sub-score moves on a date before the shock), but the CONSTANTS have seen the whole tape.
+Treat any backtested edge as an upper bound.
 """
 
 from __future__ import annotations
@@ -31,13 +36,21 @@ PROX_KNEE = 0.06    # overbought is "near the high" within this drawdown, damped
 HYSTERESIS = 2.5    # verdict deadband (composite pts): sticky on the way down, no flip-flop
 
 # Verdict cut-offs for the peak-aware composite (price BASIS = international THB; see
-# etl/intl.py). Calibrated to the CLEAN score distribution (no look-ahead components):
-# trim ~p89, tranche ~p95, sell ~p99 (score max ~68). A laddered exit at these levels
-# fires on ~11% of days and 'sell' still requires n_trend>=2 (fresh break AND confirmed
-# bear). Honest caveat from the T+1, pre-2020-selected backtest: the timing edge over a
-# simple DCA-out is only ~52-56% of windows with a CI that brushes 50% — so this ladder
-# is a DCA backbone with signal acceleration, NOT a precise top-picker. Realised price is
-# the association bid (what Poom actually sells at); see backtest.py.
+# etl/intl.py). Set from percentiles of the CLEAN score distribution (no look-ahead
+# COMPONENTS): trim ~p89, tranche ~p95, sell ~p99 (score max ~68). A laddered exit at
+# these levels fires on ~11% of days and 'sell' still requires n_trend>=2 (fresh break
+# AND confirmed bear).
+#
+# Those percentiles are full-sample, so these three numbers are the single largest piece
+# of human look-ahead in the model — and backtest.LADDER_GRID then searches a grid
+# centred on them, which cannot un-see it.
+#
+# What the harness can actually say: on T+1 fills with pre-2020 selection the ladder beat
+# a plain DCA-out in ~54% of windows, but those windows overlap ~99% and the history holds
+# only ~17 INDEPENDENT 12-month windows (backtest.n_eff). At n=17 that win rate carries a
+# binomial CI of roughly 0.33-0.77. There is no measurable edge over DCA-out in either
+# direction. Use this ladder as a DCA backbone with signal acceleration, never as a
+# top-picker. Realised price is the association bid; see backtest.py.
 T_TRIM, T_TRANCHE, T_SELL = 44.0, 52.0, 60.0
 
 

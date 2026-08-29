@@ -3,7 +3,12 @@
 // strong dollar preceded the weakest forward gold returns, so sell-pressure is MONOTONE
 // INCREASING in the dollar. (The earlier full-sample table had it backwards — it learned
 // from 2020–26, where a high DXY coincided with a THB-gold melt-up, and pinned the
-// component low.) Tails (<80, >110) are thin — interpret with care. Matches DOLLAR_SELL.
+// component low.) Tails (<80, >110) are thin — interpret with care.
+//
+// HAND-COPIED SNAPSHOT: these counts and averages are the printed output of
+// `uv run python -m etl.dxy`, transcribed. Nothing regenerates them, so if that study is
+// ever re-run this table must be updated by hand or the page will quietly disagree with
+// the score. `sell` must stay identical to DOLLAR_SELL in etl/dxy.py.
 
 export interface DxyBand {
   band: string;

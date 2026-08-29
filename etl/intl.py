@@ -13,11 +13,12 @@ live number sit on one basis:
     THB per 1 baht-weight of 96.5% bar = XAU(USD/oz fine) × USDTHB × (15.244/31.1035) × 0.965
 
 Sources:
-  - history (one-time backfill, run from a residential IP): LBMA gold fix (PM, AM
-    fallback) for USD/oz + frankfurter.dev (ECB) for USD/THB.
-  - ongoing (GitHub cron, NO external call — GTA/XAU APIs 403 datacenters): the phone
-    writes goldSpot + bahtPerUSD into gold_price_daily on every sync, so recent days are
-    derived straight from there. This keeps the compute-only job self-sufficient.
+  - history: LBMA gold fix (PM, AM fallback) for USD/oz x frankfurter.dev (ECB) for
+    USD/THB. Both are keyless and answer from any IP, so backfill() can be re-run from
+    anywhere to re-finalize the series onto true fixes.
+  - ongoing: fetch_live_intl() reads keyless world feeds that datacenters can reach
+    (unlike GTA), and topup_from_daily() re-derives the recent window from the spot/fx
+    the Cloudflare Worker stores on each GTA sync. Either way the cron needs no phone.
 """
 
 from __future__ import annotations
@@ -94,7 +95,11 @@ def _upsert(sb, ser: pd.Series, source: str) -> int:
 
 
 def backfill(sb, start: str = "2006-01-01") -> int:
-    """One-time history load into macro_daily(series='gold_intl_thb'). Run locally."""
+    """Load LBMA-fix history into macro_daily(series='gold_intl_thb'). Run locally.
+
+    Safe and idempotent to re-run: it re-finalizes every day onto the authoritative fix,
+    undoing whatever intraday snapshots the crons left behind. topup_from_daily then
+    re-covers the trailing window on the next compute."""
     return _upsert(sb, build_intl_thb(start), "lbma_x_frankfurter")
 
 
@@ -154,19 +159,20 @@ def topup_live(sb, trade_date=None) -> float | None:
 
 
 def topup_from_daily(sb, days: int = 21) -> int:
-    """Refresh the LAST `days` days from the phone's goldSpot×bahtPerUSD in gold_price_daily.
+    """Refresh the LAST `days` days from goldSpot x bahtPerUSD in gold_price_daily, which
+    the Cloudflare Worker writes on each GTA sync.
 
     No external call, so the GitHub compute-only cron stays self-sufficient. These rows
     win over the backfill for the most-recent days (same basis, just fresher).
 
-    BOUNDED on purpose: an earlier version upserted EVERY phone-written day, so each run
-    rewrote finalized LBMA-fix history rows with intraday phone snapshots — permanent
-    basis drift across the whole series. We now only touch the recent window; the deep
-    history stays on its authoritative LBMA×ECB backfill.
+    BOUNDED on purpose: an earlier version upserted EVERY such day, so each run rewrote
+    finalized LBMA-fix history rows with intraday snapshots — permanent basis drift across
+    the whole series. We now only touch the recent window; the deep history stays on its
+    authoritative LBMA x ECB backfill.
 
-    NOTE (finalization): a recent day's value is the latest intraday snapshot, not the
-    London PM fix. Re-running etl.intl.backfill from a residential IP overwrites the
-    window with the true fix once available."""
+    NOTE (finalization): a value inside this window is the latest intraday snapshot, not
+    the London PM fix. Re-running etl.intl.backfill overwrites it with the true fix once
+    published — worth doing periodically, since nothing does it automatically."""
     cutoff = (bkk_today() - pd.Timedelta(days=days)).date().isoformat()
     rows = (
         sb.table("gold_price_daily")
