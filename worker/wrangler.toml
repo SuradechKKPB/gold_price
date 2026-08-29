@@ -4,12 +4,19 @@ compatibility_date = "2024-11-01"
 workers_dev = true
 
 # Cloudflare cron fires within seconds of schedule (unlike GitHub Actions). UTC.
-#   digests: 23:00 UTC = 06:00 ICT | 08:00 UTC = 15:00 ICT (Asia/Bangkok = UTC+7)
-# Each digest run calls syncGta() first, so the "ราคาสมาคม" line is a live GTA quote.
-# (An hourly intraday sync would need a 3rd cron, but this account is at the Workers-Free
-# limit of 5 cron triggers; 2x/day GTA refresh already beats the retired phone's ~1x/day.)
+#   23:00 UTC = 06:00 ICT | 08:00 UTC = 15:00 ICT (Asia/Bangkok = UTC+7)
+# Each run calls syncGta() first, so the "ราคาสมาคม" line is a live GTA quote.
+#
+# ONE trigger, two firings. The Workers-Free ceiling of 5 counts cron TRIGGERS, not how
+# often each one fires, so a single expression listing both hours costs one slot instead
+# of two and leaves the other free for a different Worker. Splitting this back into two
+# array entries would buy nothing and cost a slot.
+#
+# Do not "simplify" this to a single daily run: syncGta only executes on a scheduled
+# invocation, so halving the schedule also halves how fresh the association price is, and
+# a stale quote on the dashboard is the most visible failure this project has.
 [triggers]
-crons = ["0 23 * * *", "0 8 * * *"]
+crons = ["0 8,23 * * *"]
 
 [vars]
 DASHBOARD_URL = "https://gold-price-gamma.vercel.app"

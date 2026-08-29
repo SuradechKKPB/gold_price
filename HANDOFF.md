@@ -106,7 +106,7 @@ T+1.
 |---|---|
 | **Supabase** (gold DB) | Project `wdcwhvqjazyvuqzvczlv` (account owning it — NOT the MCP-connected `bejjljlwgpksrhhhpyna` = MAKEIO prod; **never write gold tables there**). Reached via PostgREST + service-role key. DDL is possible via the dashboard SQL editor (Poom has the credentials); nothing currently needs it. |
 | **Vercel** | Project `suradechks-projects/gold-price`, prod alias **gold-price-gamma.vercel.app**. Deploy: `cd web && vercel deploy --prod`. ⚠️ git auto-deploy needs Root Directory = `web` set in dashboard. |
-| **Cloudflare** | Worker **gold-digest**, https://gold-digest.suradech-k.workers.dev, account `bd8c811695995b9c36ee321b4a7f81d6` (suradech.k@pontawee.com). wrangler OAuth already authed on this Mac. Free plan: **max 5 cron triggers/account** (at the limit). |
+| **Cloudflare** | Worker **gold-digest**, https://gold-digest.suradech-k.workers.dev, account `bd8c811695995b9c36ee321b4a7f81d6` (suradech.k@pontawee.com). wrangler OAuth already authed on this Mac. Free plan: **max 5 cron triggers/account**. gold-digest uses **1** (`0 8,23 * * *` — one trigger, two firings; the ceiling counts triggers, not firings). |
 | **GitHub** | github.com/SuradechKKPB/gold_price. `gh` authed as SuradechKKPB. Actions runs the compute cron. |
 | **LINE** | Primary OA **@514hgwyf** ("ราคาทอง"); fallback OA **@905fmqos** ("OnePetro"). Both free plan = **300 msgs/month**, broadcast counts per follower. **5 family followers, all on both OAs.** |
 
@@ -138,7 +138,8 @@ The service-role key bypasses RLS (full DB access) — keep it out of git and cl
 
 GitHub cron can be 5–40 min late; Cloudflare cron is precise to seconds (that is why the
 digest lives there). Association price refreshes 2×/day (at each digest) — a 3rd Worker
-cron for hourly intraday sync is blocked by the 5-cron free limit.
+cron expression is a single trigger (`0 8,23 * * *`) firing twice, so it costs one slot
+of the account's five.
 
 All five GitHub slots write `macro_daily` rows keyed by the **Bangkok** calendar date via
 `intl.bkk_today()`. Do not reintroduce a naive `pd.Timestamp.today()` there: the runner is
@@ -216,7 +217,10 @@ on **:3000**.
 - **LINE free quota (300/mo/OA)** is the binding constraint, and the current cadence spends
   one full OA (see §7). Failover to a 2nd OA buys ~600/mo; beyond that, push-to-group
   (1 msg/send, 5× cheaper), reduce frequency, or a paid OA plan.
-- **Cloudflare 5-cron/account free limit** blocks hourly intraday GTA sync (2×/day only).
+- **Association price refreshes 2×/day only.** Not a cron-count limit: gold-digest now
+  fits both digests in one trigger, so slots are free. Going more frequent means widening
+  the cron expression and branching on `event.scheduledTime` so only 08:00/23:00 UTC
+  broadcast — otherwise every extra firing also spends LINE quota.
 - **GitHub cron delay** (5–40 min) — why the digest moved to Cloudflare.
 - **State lives in `macro_daily`** under sentinel date `2000-01-01`, series `app_state:*`,
   because DDL was unavailable when it was written. DDL is available now, but the migration

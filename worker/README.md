@@ -11,10 +11,11 @@ Two jobs, both of which only Cloudflare can do:
 
 It only *reads* the score that the GitHub cron computes into Supabase. No scoring here.
 
-- **Schedule:** `0 23 * * *` + `0 8 * * *` UTC = **06:00 & 15:00 ICT**. Both are digests,
-  and each calls `syncGta()` first — so the association price refreshes exactly twice a
-  day. An hourly intraday sync would need a third trigger and this account sits at the
-  Workers-Free ceiling of five.
+- **Schedule:** `0 8,23 * * *` UTC = **06:00 & 15:00 ICT** — one trigger, two firings.
+  The Workers-Free ceiling of five counts *triggers*, not firings, so both digests cost a
+  single slot. Each firing calls `syncGta()` first, so the association price refreshes
+  twice a day. More frequent syncing would not need another trigger either: widen the
+  expression and branch on `event.scheduledTime` so only 08:00/23:00 send.
 - **URL:** https://gold-digest.suradech-k.workers.dev
 - **Account:** suradech.k@pontawee.com (`bd8c811695995b9c36ee321b4a7f81d6`)
 

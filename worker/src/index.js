@@ -8,9 +8,13 @@
 //   - sendDigest(): the fixed-time LINE card (06:00 / 15:00 ICT), precise to the second.
 // Heavy scoring stays in Python on GitHub; this is pure fetch.
 //
-// The association price refreshes exactly twice a day, once inside each digest run. An
-// hourly intraday sync would need a third cron trigger and this account is at the
-// Workers-Free ceiling of five, so every scheduled invocation here IS a digest.
+// The association price refreshes exactly twice a day, once inside each digest run. Both
+// firings come from ONE cron trigger ("0 8,23 * * *") — the Workers-Free ceiling of five
+// counts triggers, not firings — so every scheduled invocation here IS a digest.
+//
+// If intraday freshness is ever wanted, it does NOT need another trigger either: widen
+// the expression to cover more hours and branch on event.scheduledTime so only 08:00 and
+// 23:00 UTC send, while the rest sync GTA only.
 
 const CONV = (15.244 / 31.1034768) * 0.965; // THB per baht-weight of 96.5% bar, per XAU×USDTHB
 const VERDICT_TH = { hold: "ถือไว้", trim: "ลดพอร์ตเล็กน้อย", sell_tranche: "ขายบางส่วน", sell: "ขายออก" };
