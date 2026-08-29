@@ -222,6 +222,14 @@ on **:3000**.
   because DDL was unavailable when it was written. DDL is available now, but the migration
   was deliberately skipped: `etl/state.py` already isolates it behind two functions, and a
   half-applied migration would break alert dedup and double-send into a full quota.
+- **Fix/spot seam in `gold_intl_thb`.** History is the LBMA 15:00 London fix; days from
+  mid-2026 on are the session close from spot. They differ by whatever gold does after the
+  fix — 3.2% on 2026-08-28. `backfill()` refuses to overwrite a spot-recorded day so each
+  bar keeps one basis, but the one-off boundary is real and the 40-day rolling high behind
+  `dd_from_high` straddles it until ~Oct 2026. No free source covers 20 years of closes.
+- **The association price is only as fresh as the last Worker sync** (06:00 / 15:00 ICT),
+  so the dashboard can show a quote up to ~9 h old. `etl.run`, or the sync in §9, pulls it
+  on demand from a Thai IP.
 - **`backtest_runs.median_thb` scales with `GOLD_GRAMS`** — change the holding and the
   stored runs are stale until `etl.backtest` is re-run.
 - **`web/lib/dxy.ts` `DXY_TABLE` is a hand-copied snapshot** of `etl/dxy.py` output.
