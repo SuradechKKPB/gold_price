@@ -86,8 +86,18 @@ const SPAN = 0.12; // the bar charts the first 12% of drawdown
  *  ceiling at a new high is ~39 against a trim line of 44 — over 2007-2026 no bar at a new
  *  high ever scored above 35.9. The score tells you a turn HAS happened; this tells you
  *  where you are while one is forming. */
-export function TrailStop({ trail, price }: { trail: TrailState; price: number }) {
-  const dd = trail.ddFromHigh;
+export function TrailStop({ trail, price, live }: { trail: TrailState; price: number; live: boolean }) {
+  // Measure the distance against the price actually shown in the hero. trail.ddFromHigh is
+  // derived from the last stored DAILY CLOSE, so rendering it beside a real-time figure puts
+  // two clocks in one panel: on 2026-08-31 the stored dd read 4.2% (break open) while the
+  // live price gave 2.90% (break not open) — the wrong side of the 3% line. The HIGH still
+  // comes from the DB, since a 40-bar rolling max barely moves intraday and its lookback
+  // belongs to etl/indicators.py. Mirrors trailFrom() in worker/src/index.js.
+  //
+  // A live price above the stored high IS a new high, so raise it and report 0 — the same
+  // result as the rolling max + clip(lower=0) on the Python side.
+  const high = live ? Math.max(trail.recentHigh, price) : trail.recentHigh;
+  const dd = live ? (high - price) / high : trail.ddFromHigh;
   const zone =
     dd < BREAK_OPENS
       ? { color: "var(--green)", label: "ยังไม่เบรก — ใกล้ยอด" }
@@ -106,7 +116,7 @@ export function TrailStop({ trail, price }: { trail: TrailState; price: number }
         <span className="muted" style={{ fontSize: 14 }}> · {zone.label}</span>
       </div>
       <div className="muted mono" style={{ fontSize: 12, marginTop: 4 }}>
-        ยอด {thb(trail.recentHigh)} · ตอนนี้ {thb(price)} /บาททอง
+        ยอด {thb(high)} · ตอนนี้ {thb(price)} /บาททอง{live ? "" : " · ณ ราคาปิด"}
       </div>
 
       <div style={{ position: "relative", height: 8, background: "var(--panel2)", borderRadius: 6, marginTop: 14 }}>

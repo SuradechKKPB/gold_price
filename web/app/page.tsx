@@ -121,7 +121,7 @@ export default async function Page() {
           )}
           {trail && (
             <div style={{ marginTop: 22, paddingTop: 20, borderTop: "1px solid var(--border)" }}>
-              <TrailStop trail={trail} price={intlClose} />
+              <TrailStop trail={trail} price={realtime?.thbBar ?? intlClose} live={realtime != null} />
             </div>
           )}
         </div>

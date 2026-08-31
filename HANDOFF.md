@@ -263,6 +263,13 @@ on **:3000**.
   ffills whatever was last stored. This bit `dxy`, which nothing on the cron refreshed —
   it sat 3 weeks stale until `dxy.topup()` was wired into `compute.py` (2026-08-31). Any
   new macro series the score joins needs a top-up on the cron, not just a backfill.
+- **A published indicator beside a live price is two clocks in one view.** `dd_from_high`
+  is computed from the last stored daily close; the dashboard hero and the digest both
+  carry a real-time price. Rendering the stored `dd` next to them disagreed by 1.26pp and
+  straddled the 3% break threshold (fixed 2026-08-31 — `trailFrom()` in the Worker and
+  `TrailStop` in the dashboard now derive the distance from the live price and read only
+  the HIGH from the DB). Any future published indicator shown beside a live number needs
+  the same treatment.
 - **The 3% / 8% break band is hand-copied into the dashboard twice** — as
   `BREAK_OPENS` / `BREAK_SATURATES` in `web/components/ui.tsx`, and in prose in the
   "เบรกเทรนด์" formula string in `web/app/page.tsx`. Both mirror `etl/signals.py`
@@ -285,7 +292,12 @@ on **:3000**.
    structural inability to fire at a high was quantified (see §3) and answered with
    visibility rather than a refit: `dd_from_high` and `recent_high_40` are published to
    `macro_daily` by `compute.py` and rendered by the dashboard's `TrailStop` panel and the
-   LINE digest. A weight re-fit toward `overbought` was evaluated and **rejected** — it
+   LINE digest. **Both render the distance against the LIVE price, not the published `dd`** —
+   the published value is derived from the last stored daily close, and printing it beside a
+   real-time figure put two clocks in one message: it read 4.2% (break open) while the live
+   price gave 2.90% (break not open), the wrong side of the 3% line. Only the HIGH is read
+   from the DB. Falls back to the stored `dd`, labelled `ณ ราคาปิด`, when the live feeds are
+   down. A weight re-fit toward `overbought` was evaluated and **rejected** — it
    fires at highs but 57–68% of those fires are followed by a higher price 3 months later.
 1. **2026-08 audit**: holding corrected 700 g → **900 g**; `intl.topup_live`
    now stamps **Bangkok** dates (the UTC runner had been overwriting the prior day's close
