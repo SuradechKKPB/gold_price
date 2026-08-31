@@ -49,6 +49,22 @@ def fetch_macro(sb: Client, series: str) -> pd.Series:
     return s.sort_index()
 
 
+def upsert_macro(sb: Client, series: str, ser: pd.Series, source: str) -> int:
+    """Write a derived daily series into macro_daily. Returns rows written.
+
+    macro_daily.series is free text with no CHECK constraint, so publishing a new series
+    costs no migration — which is the whole reason derived numbers land here rather than
+    in a new column on signals_daily.
+    """
+    rows = [
+        {"trade_date": d.date().isoformat(), "series": series, "value": round(float(v), 6), "source": source}
+        for d, v in ser.dropna().items()
+    ]
+    for i in range(0, len(rows), 1000):
+        sb.table("macro_daily").upsert(rows[i : i + 1000], on_conflict="trade_date,series").execute()
+    return len(rows)
+
+
 def upsert_tick(sb: Client, tick: GoldTick) -> None:
     sb.table("gold_price_ticks").upsert(
         {

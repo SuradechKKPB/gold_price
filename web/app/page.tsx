@@ -1,12 +1,12 @@
 import PriceChart from "@/components/PriceChart";
-import { BacktestTable, BucketBars, DxyPanel, IndicatorsTable, KeyLevels, ScoreGauge, TruthFeed, VerdictChip } from "@/components/ui";
+import { BacktestTable, BucketBars, DxyPanel, IndicatorsTable, KeyLevels, ScoreGauge, TrailStop, TruthFeed, VerdictChip } from "@/components/ui";
 import { drawdown, sma } from "@/lib/indicators";
 import { computeTA } from "@/lib/ta";
 import { fetchTrumpPosts } from "@/lib/trump";
 import { bahtWeight, bangkokDate, calDate, newsDate, num, pct, thb } from "@/lib/format";
 import { fetchCalendar, fetchNews } from "@/lib/news";
 import { fetchRealtimeGold } from "@/lib/realtime";
-import { getBacktest, getIntlHistory, getLatestSignal, getLatestTick, getPriceHistory } from "@/lib/queries";
+import { getBacktest, getIntlHistory, getLatestSignal, getLatestTick, getPriceHistory, getTrailState } from "@/lib/queries";
 import { DXY_TABLE, fetchCurrentDxy } from "@/lib/dxy";
 
 // Decision tool: always render the current score from the DB — never serve a stale
@@ -30,7 +30,7 @@ export default async function Page() {
   const bw = bahtWeight(grams);
   const showHolding = process.env.SHOW_HOLDING === "true"; // default: hide personal holding on the public page
 
-  const [signal, tick, prices, intlPrices, runs, news, events, realtime, trump, dxyNow] = await Promise.all([
+  const [signal, tick, prices, intlPrices, runs, news, events, realtime, trump, dxyNow, trail] = await Promise.all([
     getLatestSignal(),
     getLatestTick(),
     getPriceHistory(),
@@ -41,11 +41,13 @@ export default async function Page() {
     fetchRealtimeGold(),
     fetchTrumpPosts(),
     fetchCurrentDxy(),
+    getTrailState(),
   ]);
 
   // Score + technical analysis run on the WORLD gold price in THB (intlPrices); the
   // association bid (buyIn) stays the realized number Poom actually sells at.
   const ta = computeTA(intlPrices, 0);
+  const intlClose = intlPrices.at(-1)?.bar_buy_close ?? 0;
   const buyIn = tick?.bar_buy ?? prices.at(-1)?.bar_buy_close ?? 0;
   const holdingValue = bw * buyIn;
   const rtTime = realtime?.asOf
@@ -115,6 +117,11 @@ export default async function Page() {
                   {signal.active_signals.map((s) => SIGNAL_LABELS[s] ?? s).join(" · ")}
                 </span>
               )}
+            </div>
+          )}
+          {trail && (
+            <div style={{ marginTop: 22, paddingTop: 20, borderTop: "1px solid var(--border)" }}>
+              <TrailStop trail={trail} price={intlClose} />
             </div>
           )}
         </div>

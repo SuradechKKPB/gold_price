@@ -39,6 +39,13 @@ association quote, so a local premium swing can't jolt the signal. Verdict ladde
 trim ≥44, tranche ≥52, sell ≥60 (sell also needs 2 trend confirmations), with a hysteresis
 deadband. Details and the calibration caveat live in [etl/signals.py](etl/signals.py).
 
+It is a **trailing stop, so it fires after the turn and never at the high** — `trend_break`
+is 40% of the weight and is zero until price is 3% off the recent high, which caps the
+composite near ~39 against a trim line of 44. Over 2007–2026 no bar at a new high ever
+scored above 35.9. The distance to that high is therefore published separately
+(`dd_from_high`) and shown on the dashboard and in the digest; see §3 of
+[HANDOFF.md](HANDOFF.md) for the measurements and why re-weighting was rejected.
+
 Changing any scoring constant means bumping `SCORE_VERSION`; the next run then rewrites
 all of `signals_daily` so the backtest never mixes formula vintages.
 

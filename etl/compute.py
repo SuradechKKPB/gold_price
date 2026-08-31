@@ -27,6 +27,28 @@ from . import dxy as dxy_mod  # aliased: `dxy` is the series variable in main()
 from .config import settings
 
 
+def publish_trail_state(sb, ind, days: int = 250) -> None:
+    """Publish the trailing-stop state the score is actually reading.
+
+    The composite CANNOT warn you at a high: trend_break carries 40% of the weight and is
+    zero by construction until price is TRAIL_X below the recent high, so the arithmetic
+    ceiling at a new high is ~39 against a trim line of 44. Measured over 2007-2026, not
+    one of the 884 bars at a new high ever scored above 35.9. That is the design (a
+    trailing stop fires after the turn), not a defect — but it means the score alone
+    cannot tell you where you stand while the top is forming.
+
+    So the distance to the recent high is published as its own number. It is computed HERE,
+    from the same indicators.build() the score reads, rather than recomputed in the
+    dashboard's TypeScript and the Worker's JavaScript — LB and the 3%/8% band would then
+    live in three places and drift (see HANDOFF's note on the hand-copied DXY_TABLE).
+    """
+    tail = ind.tail(days)
+    load.upsert_macro(sb, "dd_from_high", tail["dd_from_high"], "etl_compute")
+    load.upsert_macro(sb, "recent_high_40", tail["recent_high"], "etl_compute")
+    last = tail.iloc[-1]
+    print(f"trail state: {last['dd_from_high'] * 100:.1f}% below the 40-bar high ({last['recent_high']:,.0f}).")
+
+
 def main(force_full: bool = False) -> None:
     if not settings.has_supabase:
         print("No Supabase env; nothing to compute.")
@@ -39,6 +61,7 @@ def main(force_full: bool = False) -> None:
     print(f"live intl today: {live:,.0f}" if live else "no live bar written — scoring the last stored close.")
     daily = intl.load_intl_daily(sb)         # world gold in THB (96.5% basis), daily OHLC
     ind = indicators.build(daily, 0.0)       # no association bid/ask spread on the world price
+    publish_trail_state(sb, ind)             # what the score reads but can never say out loud
     dxy_mod.topup(sb)                        # keep the dollar sub-score off a stale ffill
     dxy = load.fetch_macro(sb, "dxy")
     scores = signals.compute_scores(ind, dxy)

@@ -1,4 +1,4 @@
-import type { BacktestRun, Verdict } from "@/lib/types";
+import type { BacktestRun, TrailState, Verdict } from "@/lib/types";
 import type { Indicator, KeyLevel, State } from "@/lib/ta";
 import type { TruthPost } from "@/lib/trump";
 import { type DxyBand, bandOf } from "@/lib/dxy";
@@ -66,6 +66,60 @@ export function ScoreGauge({ score }: { score: number }) {
         <span>บางส่วน 52</span>
         <span>ขาย 60</span>
         <span>100</span>
+      </div>
+    </div>
+  );
+}
+
+// DISPLAY-ONLY mirrors of etl/signals.py TRAIL_X and TRAIL_X + TRAIL_BAND. They label the
+// ticks on the bar; nothing here is computed from them (the drawdown itself is published
+// by etl.compute). If those Python constants move, these labels go stale — the same
+// hand-copied-snapshot trap as DXY_TABLE, kept deliberately small and noted in HANDOFF.
+const BREAK_OPENS = 0.03;
+const BREAK_SATURATES = 0.08;
+const SPAN = 0.12; // the bar charts the first 12% of drawdown
+
+/** Where price stands against the high the score's trailing break is measured from.
+ *
+ *  This panel exists because the composite CANNOT say this. trend_break is 40% of the
+ *  weight and is zero until price is 3% below the recent high, so the score's arithmetic
+ *  ceiling at a new high is ~39 against a trim line of 44 — over 2007-2026 no bar at a new
+ *  high ever scored above 35.9. The score tells you a turn HAS happened; this tells you
+ *  where you are while one is forming. */
+export function TrailStop({ trail, price }: { trail: TrailState; price: number }) {
+  const dd = trail.ddFromHigh;
+  const zone =
+    dd < BREAK_OPENS
+      ? { color: "var(--green)", label: "ยังไม่เบรก — ใกล้ยอด" }
+      : dd < BREAK_SATURATES
+        ? { color: "var(--amber)", label: "เบรกเปิดแล้ว" }
+        : { color: "var(--orange)", label: "เบรกอิ่มตัว — ยอดผ่านไปแล้ว" };
+  const at = (x: number) => `${Math.min(x / SPAN, 1) * 100}%`;
+
+  return (
+    <div>
+      <div className="muted" style={{ fontSize: 12, letterSpacing: 0.4 }}>
+        ต่ำกว่ายอด 40 วัน (ฐานที่คะแนนวัดการเบรก)
+      </div>
+      <div className="mono" style={{ fontSize: 32, lineHeight: 1.1, marginTop: 6, color: zone.color }}>
+        −{pct(dd, 1)}
+        <span className="muted" style={{ fontSize: 14 }}> · {zone.label}</span>
+      </div>
+      <div className="muted mono" style={{ fontSize: 12, marginTop: 4 }}>
+        ยอด {thb(trail.recentHigh)} · ตอนนี้ {thb(price)} /บาททอง
+      </div>
+
+      <div style={{ position: "relative", height: 8, background: "var(--panel2)", borderRadius: 6, marginTop: 14 }}>
+        <div style={{ position: "absolute", inset: 0, width: at(dd), background: zone.color, borderRadius: 6 }} />
+        {[BREAK_OPENS, BREAK_SATURATES].map((t) => (
+          <div key={t} style={{ position: "absolute", left: at(t), top: -3, bottom: -3, width: 1, background: "var(--border)" }} />
+        ))}
+      </div>
+      <div className="muted mono" style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginTop: 6 }}>
+        <span>ยอด 0%</span>
+        <span>เบรกเปิด {pct(BREAK_OPENS)}</span>
+        <span>อิ่มตัว {pct(BREAK_SATURATES)}</span>
+        <span>{pct(SPAN)}+</span>
       </div>
     </div>
   );

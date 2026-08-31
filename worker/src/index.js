@@ -90,6 +90,22 @@ async function buildMessage(env) {
     { headers: H },
   );
 
+  // The trailing-stop state, read from macro_daily where etl.compute publishes it. The
+  // score cannot express this: trend_break is 40% of the weight and stays 0 until price is
+  // 3% below the recent high, so a digest that prints only the score is silent on where
+  // the price actually stands while a top is forming. Not recomputed here — the 40-bar
+  // lookback lives in etl/indicators.py and must not be reimplemented in three languages.
+  const trailOf = async (series) => {
+    try {
+      const [r] = await jget(
+        `${env.SUPABASE_URL}/rest/v1/macro_daily?select=value&series=eq.${series}&order=trade_date.desc&limit=1`,
+        { headers: H },
+      );
+      return r?.value ?? null;
+    } catch (e) { return null; }
+  };
+  const [dd, recentHigh] = await Promise.all([trailOf("dd_from_high"), trailOf("recent_high_40")]);
+
   let xau = null, fx = null;
   try { xau = (await jget("https://api.gold-api.com/price/XAU")).price; } catch (e) {}
   try { fx = (await jget("https://open.er-api.com/v6/latest/USD")).rates.THB; } catch (e) {}
@@ -98,6 +114,9 @@ async function buildMessage(env) {
   if (xau && fx) lines.push(`สากล real-time: $${nf.format(Math.round(xau))}/oz ≈ ${nf.format(Math.round(xau * fx * CONV))} บาท/บาททอง`);
   if (px?.bar_buy_close != null) lines.push(`ราคาสมาคมฯ (ขายได้จริง): ${nf.format(Math.round(px.bar_buy_close))} บาท/บาททอง`);
   if (sig?.sell_pressure != null) lines.push(`คะแนนสัญญาณ ${Math.round(sig.sell_pressure)}/100 — ${VERDICT_TH[sig.verdict] || sig.verdict}`);
+  if (dd != null && recentHigh != null) {
+    lines.push(`ต่ำกว่ายอด 40 วัน ${(dd * 100).toFixed(1)}% (ยอด ${nf.format(Math.round(recentHigh))})`);
+  }
   if (sig?.trade_date) lines.push(`ข้อมูล ณ ${sig.trade_date}`);
   lines.push(`ดูรายละเอียด: ${env.DASHBOARD_URL}`);
   return lines.join("\n");
