@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 
 from . import advice, alerts, indicators, intl, load, signals, state
+from . import dxy as dxy_mod  # aliased: `dxy` is the series variable in main()
 from .config import settings
 
 
@@ -38,6 +39,7 @@ def main(force_full: bool = False) -> None:
     print(f"live intl today: {live:,.0f}" if live else "no live bar written — scoring the last stored close.")
     daily = intl.load_intl_daily(sb)         # world gold in THB (96.5% basis), daily OHLC
     ind = indicators.build(daily, 0.0)       # no association bid/ask spread on the world price
+    dxy_mod.topup(sb)                        # keep the dollar sub-score off a stale ffill
     dxy = load.fetch_macro(sb, "dxy")
     scores = signals.compute_scores(ind, dxy)
     latest = scores.iloc[-1]
