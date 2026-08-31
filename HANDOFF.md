@@ -68,12 +68,12 @@ price — NOT the signal basis. Local-premium jitter therefore no longer moves t
 
 | File | Role |
 |---|---|
-| `compute.py` | **Cron entrypoint.** Fetch world price → indicators → signals → upsert `signals_daily` → transition alert. Flag: `--full` (rewrite history on formula change). The digest lives in the Worker. |
+| `compute.py` | **Cron entrypoint.** Fetch world price → top up DXY → indicators → signals → upsert `signals_daily` → transition alert. Flag: `--full` (rewrite history on formula change). The digest lives in the Worker. |
 | `run.py` | Manual GTA ingest, off-schedule. Kept for a hand-run backfill or repair from a machine that reaches GTA; the Worker owns routine ingest. |
 | `intl.py` | World gold in THB. `fetch_live_intl()` (keyless, datacenter-OK), `topup_live/from_daily`, LBMA×ECB `backfill()` (idempotent — re-run to re-finalize history onto true fixes), `bkk_today()`. |
 | `indicators.py` | SMA50/200, death-cross, drawdown-from-high, weekly RSI/MACD/Chandelier/Donchian/%B. |
 | `signals.py` | The 0–100 composite + verdict. `SCORE_VERSION` (=3), thresholds `T_TRIM/TRANCHE/SELL = 44/52/60`, hysteresis. |
-| `dxy.py` | Reconstructed Dollar Index (ECB FX) + the monotone `DOLLAR_SELL` band table. |
+| `dxy.py` | Reconstructed Dollar Index (ECB FX) + the monotone `DOLLAR_SELL` band table. `topup()` refreshes the recent tail on every cron run; `backfill_macro()` rewrites 2006-today and is manual-only. |
 | `advice.py` | Personal overlay: local-premium z-score, deadline decay, target/cost framing. Off unless campaign config set. |
 | `alerts.py` | LINE broadcast with **OA failover** + verdict-transition builder. (The digest builder lives in the Worker — a second sender here would double-spend the quota.) |
 | `backtest.py` | Sell-the-holding harness (T+1 fills, pre-2020 selection, seeded block-bootstrap CI, `n_eff()`, ladder policy). |
@@ -238,6 +238,10 @@ on **:3000**.
   stored runs are stale until `etl.backtest` is re-run.
 - **`web/lib/dxy.ts` `DXY_TABLE` is a hand-copied snapshot** of `etl/dxy.py` output.
   Re-running the study means updating it by hand.
+- **A stale `macro_daily` series degrades the score silently**, with no error: `signals`
+  ffills whatever was last stored. This bit `dxy`, which nothing on the cron refreshed —
+  it sat 3 weeks stale until `dxy.topup()` was wired into `compute.py` (2026-08-31). Any
+  new macro series the score joins needs a top-up on the cron, not just a backfill.
 - **Vercel git auto-deploy** needs Root Directory = `web`; until then deploy via CLI.
 - **Score staleness**: the digest's score is as fresh as the last GitHub compute (≤ a few
   hours). The world/association prices in it are live.

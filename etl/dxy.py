@@ -64,6 +64,48 @@ def backfill_macro(sb) -> int:
     return len(rows)
 
 
+def topup(sb, days: int = 60) -> int:
+    """Refresh only the RECENT tail of macro_daily(series='dxy'). Returns rows written.
+
+    backfill_macro() rewrites all of 2006-today on every call, which is far too heavy to
+    hang off the daily cron. But leaving the series unrefreshed is worse: signals ffills
+    the last stored DXY forward, so a stale series pins the dollar sub-score (12% of the
+    composite) at whatever band the dollar was in weeks ago, silently and with no error.
+    This fetches one short window instead, which is cheap enough to run every day.
+
+    `days` covers the gap with slack: frankfurter only publishes ECB business days, so a
+    long holiday plus a weekend can leave the tail several days short of today, and the
+    window has to reach back past that to land on real data. Overlap is free — the upsert
+    is idempotent on (trade_date, series).
+
+    Never raises. A frankfurter outage must not take down the scoring run: the score
+    still computes off the stored series, one band-crossing stale at worst.
+    """
+    end = pd.Timestamp.today().normalize()
+    start = end - pd.Timedelta(days=days)
+    try:
+        with httpx.Client(timeout=20) as c:
+            url = f"{FRANKFURTER}/{start.date()}..{end.date()}?base=USD&symbols={CCYS}"
+            data = c.get(url).raise_for_status().json().get("rates", {})
+    except (httpx.HTTPError, ValueError) as e:
+        print(f"dxy.topup: frankfurter unreachable ({e.__class__.__name__}); keeping the stored series.")
+        return 0
+
+    rows = [
+        {"trade_date": day, "series": "dxy", "value": round(v, 2), "source": "frankfurter"}
+        for day, r in sorted(data.items())
+        if (v := _dxy_from_rates(r)) is not None
+    ]
+    if not rows:
+        print(f"dxy.topup: no ECB rates in {start.date()}..{end.date()}; keeping the stored series.")
+        return 0
+
+    sb.table("macro_daily").upsert(rows, on_conflict="trade_date,series").execute()
+    last = rows[-1]
+    print(f"dxy.topup: {len(rows)} rows through {last['trade_date']} (DXY {last['value']:.2f} -> band {band_of(last['value'])}).")
+    return len(rows)
+
+
 def _dxy_from_rates(r: dict) -> float | None:
     try:
         eurusd, gbpusd = 1 / r["EUR"], 1 / r["GBP"]
