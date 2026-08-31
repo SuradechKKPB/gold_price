@@ -68,7 +68,7 @@ price — NOT the signal basis. Local-premium jitter therefore no longer moves t
 
 | File | Role |
 |---|---|
-| `compute.py` | **Cron entrypoint.** Fetch world price → top up DXY → indicators → signals → upsert `signals_daily` → transition alert. Flag: `--full` (rewrite history on formula change). The digest lives in the Worker. |
+| `compute.py` | **Cron entrypoint.** Fetch world price → top up DXY → indicators → publish trail state → signals → upsert `signals_daily` → transition alert. Flag: `--full` (rewrite history on formula change). The digest lives in the Worker. |
 | `run.py` | Manual GTA ingest, off-schedule. Kept for a hand-run backfill or repair from a machine that reaches GTA; the Worker owns routine ingest. |
 | `intl.py` | World gold in THB. `fetch_live_intl()` (keyless, datacenter-OK), `topup_live/from_daily`, LBMA×ECB `backfill()` (idempotent — re-run to re-finalize history onto true fixes), `bkk_today()`. |
 | `indicators.py` | SMA50/200, death-cross, drawdown-from-high, weekly RSI/MACD/Chandelier/Donchian/%B. |
@@ -77,7 +77,7 @@ price — NOT the signal basis. Local-premium jitter therefore no longer moves t
 | `advice.py` | Personal overlay: local-premium z-score, deadline decay, target/cost framing. Off unless campaign config set. |
 | `alerts.py` | LINE broadcast with **OA failover** + verdict-transition builder. (The digest builder lives in the Worker — a second sender here would double-spend the quota.) |
 | `backtest.py` | Sell-the-holding harness (T+1 fills, pre-2020 selection, seeded block-bootstrap CI, `n_eff()`, ladder policy). |
-| `load.py` | Supabase client + fetch/upsert helpers. |
+| `load.py` | Supabase client + fetch/upsert helpers, incl. `upsert_macro()` for derived series (`series` is free text — a new one needs no migration). |
 | `state.py` | Tiny KV store over `macro_daily` under a sentinel date: `score_version`, `last_alert`. A hack, but isolated behind `get_state`/`set_state` — see §10. |
 | `config.py` | Env/settings (pydantic). Holding = 900 g bar; sell-campaign fields optional (currently unset, so `advice.py`'s deadline decay and target framing are dark). |
 
@@ -88,6 +88,27 @@ price — NOT the signal basis. Local-premium jitter therefore no longer moves t
 - **dollar**: monotone band map `<80:30 · 80–90:40 · 90–100:55 · 100–110:68 · >110:75` (strong USD → lean sell; derived from **pre-2020** data to avoid look-ahead).
 - **seasonality**: point-in-time expanding monthly tilt.
 - **verdict**: trim ≥44 · tranche ≥52 · sell ≥60 (sell also needs `n_trend ≥ 2`); hysteresis deadband stops flip-flop.
+
+> **The score CANNOT fire at a high — this is structural, not a tuning miss.** `trend_break`
+> carries 40% of the weight and is zero by construction until price is `TRAIL_X` (3%) below
+> the recent 40-bar high, so the arithmetic ceiling at a new high is
+> `0.25·overbought(100) + 0.12·dollar(75) + 0.05·seasonality(100) = 39` against a trim line
+> of **44**. Measured over 2007–2026: of **884 bars at a new high the composite never
+> exceeded 35.9**, and **0 of 2,035 bars within 2% of a high ever reached trim**.
+> `corr(score, dd_from_high) = +0.703` — it gets louder the deeper the decline runs.
+>
+> That is what a trailing stop *is*: it fires after the turn. The 2026 record shows it
+> plainly — at the 2026-01-29 peak (79,757) the score was **31.6 → hold**; first `trim` came
+> at 70,497 (−7.9%); the loudest `sell` run was 2026-07-16→29 at 63,396–64,807, **−19% below
+> the peak**. Re-weighting toward `overbought` does make it fire at highs, at a measured
+> cost: of the near-high fires that creates, **57% (swap to ob .40) to 68% (ob-only) are
+> followed by a HIGHER THB gold price three months later.** Rejected on that basis
+> (2026-08-31). Do not refit the weights to a single observed peak — that is exactly the
+> look-ahead the 2026-07 audit removed.
+>
+> The mitigation is visibility, not a formula change: `dd_from_high` / `recent_high_40` are
+> published to `macro_daily` and shown on the dashboard and in the digest, so the distance
+> to the high is legible even while the composite is quiet.
 
 Any formula/constant change → **bump `SCORE_VERSION`**; the next `compute.py` run auto-rewrites the whole `signals_daily` history so the backtest stays single-epoch.
 
@@ -242,6 +263,11 @@ on **:3000**.
   ffills whatever was last stored. This bit `dxy`, which nothing on the cron refreshed —
   it sat 3 weeks stale until `dxy.topup()` was wired into `compute.py` (2026-08-31). Any
   new macro series the score joins needs a top-up on the cron, not just a backfill.
+- **The 3% / 8% break band is hand-copied into the dashboard twice** — as
+  `BREAK_OPENS` / `BREAK_SATURATES` in `web/components/ui.tsx`, and in prose in the
+  "เบรกเทรนด์" formula string in `web/app/page.tsx`. Both mirror `etl/signals.py`
+  `TRAIL_X` and `TRAIL_X + TRAIL_BAND`. Display-only (nothing is computed from them), but
+  they go stale silently if those Python constants move. Same trap as `DXY_TABLE`.
 - **Vercel git auto-deploy** needs Root Directory = `web`; until then deploy via CLI.
 - **Score staleness**: the digest's score is as fresh as the last GitHub compute (≤ a few
   hours). The world/association prices in it are live.
@@ -251,7 +277,17 @@ on **:3000**.
 
 ## 11. Recent major changes (2026)
 
-0. **2026-08 audit** (this pass): holding corrected 700 g → **900 g**; `intl.topup_live`
+0. **2026-08-31 — trailing-stop visibility + DXY top-up.** Two findings, both measured, no
+   scoring constant touched (`SCORE_VERSION` still 3). (a) Nothing on the cron refreshed
+   `macro_daily(series='dxy')` — `backfill_macro()` rewrites 2006-today and was manual-only,
+   so the series sat 3 weeks stale while `signals` ffilled it forward, silently pinning the
+   dollar sub-score; `dxy.topup()` now refreshes the tail every run. (b) The score's
+   structural inability to fire at a high was quantified (see §3) and answered with
+   visibility rather than a refit: `dd_from_high` and `recent_high_40` are published to
+   `macro_daily` by `compute.py` and rendered by the dashboard's `TrailStop` panel and the
+   LINE digest. A weight re-fit toward `overbought` was evaluated and **rejected** — it
+   fires at highs but 57–68% of those fires are followed by a higher price 3 months later.
+1. **2026-08 audit**: holding corrected 700 g → **900 g**; `intl.topup_live`
    now stamps **Bangkok** dates (the UTC runner had been overwriting the prior day's close
    from two of five cron slots — a T+1 leak); `_block_boot` switched from an LCG stride to
    a seeded RNG after a coverage test showed its nominal 95% interval covering the truth
@@ -259,15 +295,15 @@ on **:3000**.
    unreachable Worker branch, the `/send` route, `compute.py --digest` and
    `alerts.send_daily_digest` deleted; docs reconciled to the code. Verified by shock
    injection that no indicator or sub-score reads the future.
-1. **Score basis → international THB** (removes local-premium jitter).
-2. **Expert audit + de-bias**: killed look-ahead (seasonality point-in-time, DXY table
+2. **Score basis → international THB** (removes local-premium jitter).
+3. **Expert audit + de-bias**: killed look-ahead (seasonality point-in-time, DXY table
    reversed to monotone/pre-2020, T+1 backtest fills, pre-2020 threshold selection,
    bootstrap CIs), de-jittered the score (continuous momentum, gated death-cross,
    hysteresis), recalibrated thresholds to 44/52/60. (The "52–56%" figure published at
    the time was superseded by the 2026-08 bootstrap fix — see item 0.)
-3. **Self-sufficient cron**: GitHub fetches the world price itself → no phone for the score.
-4. **Cloudflare Worker digest** (precise 06:00/15:00) + **live GTA sync** (CF reaches GTA)
+4. **Self-sufficient cron**: GitHub fetches the world price itself → no phone for the score.
+5. **Cloudflare Worker digest** (precise 06:00/15:00) + **live GTA sync** (CF reaches GTA)
    → phone fully retired for gold; association price fresh.
-5. **LINE OA failover** when a free OA's monthly quota is spent.
+6. **LINE OA failover** when a free OA's monthly quota is spent.
 
 See `git log` for commit-level detail.

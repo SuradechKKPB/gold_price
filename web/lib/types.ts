@@ -35,3 +35,10 @@ export interface BacktestRun {
   win_rate_vs_dca: number | null;
   params?: { oos_capture_pct?: number | null } | null;
 }
+
+/** The trailing-stop state the Python score reads (macro_daily, written by etl.compute).
+ *  Published rather than recomputed here so the panel and the score cannot disagree. */
+export interface TrailState {
+  ddFromHigh: number; // fraction >= 0; 0 at a new high
+  recentHigh: number; // THB level the drawdown is measured from (40-bar high)
+}

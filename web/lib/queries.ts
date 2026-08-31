@@ -1,6 +1,6 @@
 import "server-only";
 import { supabase } from "./supabase";
-import type { BacktestRun, PriceRow, SignalRow, TickRow } from "./types";
+import type { BacktestRun, PriceRow, SignalRow, TickRow, TrailState } from "./types";
 
 async function fetchAll<T>(table: string, cols: string, order: string): Promise<T[]> {
   const out: T[] = [];
@@ -67,4 +67,28 @@ export async function getBacktest(horizonDays: number): Promise<BacktestRun[]> {
     .eq("horizon_days", horizonDays)
     .order("median_capture_pct", { ascending: false });
   return (data as BacktestRun[]) ?? [];
+}
+
+/** Distance to the recent high that the score's trailing break is measured against.
+ *
+ *  Read, never recomputed: the lookback (40 bars) and the 3%/8% break band live in
+ *  etl/indicators.py and etl/signals.py, and a second implementation here would drift
+ *  from the score the moment either constant moved. Returns null before etl.compute has
+ *  published the series (or if only one of the two rows exists) so the caller can hide
+ *  the panel rather than render half of it. */
+export async function getTrailState(): Promise<TrailState | null> {
+  const latest = async (series: string): Promise<number | null> => {
+    const { data } = await supabase
+      .from("macro_daily")
+      .select("value")
+      .eq("series", series)
+      .order("trade_date", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const v = (data as { value: number } | null)?.value;
+    return typeof v === "number" ? v : null;
+  };
+  const [ddFromHigh, recentHigh] = await Promise.all([latest("dd_from_high"), latest("recent_high_40")]);
+  if (ddFromHigh === null || recentHigh === null) return null;
+  return { ddFromHigh, recentHigh };
 }

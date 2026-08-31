@@ -60,6 +60,7 @@ def build(daily: pd.DataFrame, spread_thb: float) -> pd.DataFrame:
     # grind down still sells instead of holding to the bottom.
     LB = 40                                         # ~8 trading weeks: the "recent high worth capturing"
     recent_high = c.rolling(LB, min_periods=20).max()
+    out["recent_high"] = recent_high                                       # the level dd is measured from
     out["dd_from_high"] = ((recent_high - c) / recent_high).clip(lower=0)   # >= 0; 0 at a new high
     out["below_40w_low"] = c < c.rolling(LB * 5).min().shift(1)
 
