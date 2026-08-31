@@ -79,6 +79,30 @@ async function syncGta(env) {
   return { day, bar_buy: d.bL_BuyPrice, bar_sell: sell };
 }
 
+/** Distance to the published 40-bar high, measured against the LIVE price when there is one.
+ *
+ *  `dd_from_high` as published by etl.compute is derived from the last stored DAILY CLOSE,
+ *  so printing it verbatim beside the real-time line puts two clocks in one message. On
+ *  2026-08-31 that gap was 1.26pp and it straddled a threshold: the digest said 4.2%
+ *  ("break open") while the live price said 2.90% ("break not open yet"). Wrong side of
+ *  the 3% line, not a rounding difference.
+ *
+ *  The HIGH still comes from the DB — a 40-bar rolling max barely moves intraday, and its
+ *  lookback belongs to etl/indicators.py. Only the DISTANCE needs the live price. Both
+ *  sides are the same basis: CONV here is 0.472952 and the Python series uses 0.47295.
+ *
+ *  A live price above the stored high IS a new high, so the high is raised and the distance
+ *  is 0 — the same result as the rolling max + clip(lower=0) on the Python side.
+ */
+function trailFrom(recentHigh, livePrice, ddStored) {
+  if (recentHigh == null) return null;
+  if (livePrice == null) {
+    return ddStored == null ? null : { dd: ddStored, high: recentHigh, live: false };
+  }
+  const high = Math.max(recentHigh, livePrice);
+  return { dd: (high - livePrice) / high, high, live: true };
+}
+
 async function buildMessage(env) {
   const H = supaHeaders(env, false);
   const [sig] = await jget(
@@ -90,11 +114,10 @@ async function buildMessage(env) {
     { headers: H },
   );
 
-  // The trailing-stop state, read from macro_daily where etl.compute publishes it. The
-  // score cannot express this: trend_break is 40% of the weight and stays 0 until price is
-  // 3% below the recent high, so a digest that prints only the score is silent on where
-  // the price actually stands while a top is forming. Not recomputed here — the 40-bar
-  // lookback lives in etl/indicators.py and must not be reimplemented in three languages.
+  // The trailing-stop state. The score cannot express this: trend_break is 40% of the
+  // weight and stays 0 until price is 3% below the recent high, so a digest carrying only
+  // the score is silent on where price stands while a top is forming. The stored dd is the
+  // fallback for when the live feeds are down — see trailFrom().
   const trailOf = async (series) => {
     try {
       const [r] = await jget(
@@ -104,18 +127,22 @@ async function buildMessage(env) {
       return r?.value ?? null;
     } catch (e) { return null; }
   };
-  const [dd, recentHigh] = await Promise.all([trailOf("dd_from_high"), trailOf("recent_high_40")]);
+  const [ddStored, recentHigh] = await Promise.all([trailOf("dd_from_high"), trailOf("recent_high_40")]);
 
   let xau = null, fx = null;
   try { xau = (await jget("https://api.gold-api.com/price/XAU")).price; } catch (e) {}
   try { fx = (await jget("https://open.er-api.com/v6/latest/USD")).rates.THB; } catch (e) {}
 
+  const liveThb = xau && fx ? xau * fx * CONV : null;
+  const trail = trailFrom(recentHigh, liveThb, ddStored);
+
   const lines = ["🔔 ราคาทองวันนี้"];
   if (xau && fx) lines.push(`สากล real-time: $${nf.format(Math.round(xau))}/oz ≈ ${nf.format(Math.round(xau * fx * CONV))} บาท/บาททอง`);
   if (px?.bar_buy_close != null) lines.push(`ราคาสมาคมฯ (ขายได้จริง): ${nf.format(Math.round(px.bar_buy_close))} บาท/บาททอง`);
   if (sig?.sell_pressure != null) lines.push(`คะแนนสัญญาณ ${Math.round(sig.sell_pressure)}/100 — ${VERDICT_TH[sig.verdict] || sig.verdict}`);
-  if (dd != null && recentHigh != null) {
-    lines.push(`ต่ำกว่ายอด 40 วัน ${(dd * 100).toFixed(1)}% (ยอด ${nf.format(Math.round(recentHigh))})`);
+  if (trail) {
+    const asOf = trail.live ? "" : " · ณ ราคาปิด";
+    lines.push(`ต่ำกว่ายอด 40 วัน ${(trail.dd * 100).toFixed(1)}% (ยอด ${nf.format(Math.round(trail.high))})${asOf}`);
   }
   if (sig?.trade_date) lines.push(`ข้อมูล ณ ${sig.trade_date}`);
   lines.push(`ดูรายละเอียด: ${env.DASHBOARD_URL}`);
