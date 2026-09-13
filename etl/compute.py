@@ -82,8 +82,8 @@ def main(force_full: bool = False) -> None:
 
     advice.topup_premium(sb)                        # refresh local-premium z for the dashboard
     extra = advice.advice_line(advice.build_advice(sb))  # personal campaign overlay for the message
-    sent = alerts.alert_on_transition(sb, scores, extra=extra)
-    line = "LINE transition alert sent." if sent else "No alert."
+    alert_status = alerts.alert_on_transition(sb, scores, extra=extra)
+    line = alerts.status_line(alert_status)
 
     print(
         f"Recomputed {len(scores)} intl scores; wrote {n} rows "
@@ -91,6 +91,13 @@ def main(force_full: bool = False) -> None:
         f"Latest {latest.name.date()}: {latest['sell_pressure']:.0f}/100 -> {latest['verdict']} "
         f"({latest['active_signals']}). {line}"
     )
+
+    # An undelivered transition is the one failure mode nobody can see from the inside:
+    # LINE is the channel, so LINE cannot report its own silence. Fail the job instead —
+    # a red run in the Actions list (and its notification mail) is the out-of-band signal.
+    # The alert itself is not lost: state was not advanced, so the next run retries it.
+    if alert_status == "failed":
+        raise SystemExit("verdict transition could not be delivered to LINE")
 
 
 if __name__ == "__main__":
