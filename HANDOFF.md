@@ -200,8 +200,14 @@ Two ways out, in order of preference:
    cliff permanently and is the fix this section has recommended since it was written. It
    needs a `groupId`, which only arrives on a webhook `join` event when the OA is invited
    into a group, so it cannot be done from the repo alone.
-2. **Stopgap:** get the 3 primary-only followers to add @905fmqos as well, which at least
-   makes failover reach everyone. It does not stop the monthly cliff, only the blackout.
+2. **Get the 3 primary-only followers onto @905fmqos as well** — *chosen 2026-09-14*.
+   Invite link: `https://line.me/R/ti/p/@905fmqos`. This does not remove the monthly
+   cliff, but it makes failover reach all 8, which is the part that actually hurt. Check
+   it landed with the `insight/followers` call in §9: the fallback should read 8, not 5.
+   Note the arithmetic afterwards — at 8 followers each OA lasts ~18.75 days, so the two
+   together cover ~37 days and the month closes with headroom. A **ninth** follower breaks
+   that (2 × 300 ÷ 18 = 33 days is fine, but the margin is thin), so option 1 is still the
+   answer the moment the audience grows again.
 
 ---
 
