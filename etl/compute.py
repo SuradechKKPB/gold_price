@@ -82,6 +82,7 @@ def main(force_full: bool = False) -> None:
 
     advice.topup_premium(sb)                        # refresh local-premium z for the dashboard
     extra = advice.advice_line(advice.build_advice(sb))  # personal campaign overlay for the message
+    line_ok = alerts.check_channels()               # reads only — costs no LINE quota
     alert_status = alerts.alert_on_transition(sb, scores, extra=extra)
     line = alerts.status_line(alert_status)
 
@@ -98,6 +99,8 @@ def main(force_full: bool = False) -> None:
     # The alert itself is not lost: state was not advanced, so the next run retries it.
     if alert_status == "failed":
         raise SystemExit("verdict transition could not be delivered to LINE")
+    if not line_ok:
+        raise SystemExit("no usable LINE channel — a verdict transition could not be delivered")
 
 
 if __name__ == "__main__":

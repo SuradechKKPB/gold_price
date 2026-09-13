@@ -21,6 +21,9 @@ from . import state
 from .config import settings
 
 LINE_BROADCAST = "https://api.line.me/v2/bot/message/broadcast"
+LINE_INFO = "https://api.line.me/v2/bot/info"
+LINE_QUOTA = "https://api.line.me/v2/bot/message/quota"
+LINE_CONSUMPTION = "https://api.line.me/v2/bot/message/quota/consumption"
 
 _VERDICT_TH = {
     "hold": "ถือไว้",
@@ -66,6 +69,51 @@ def send_line_broadcast(text: str) -> bool:
             print(f"LINE: {name} OA raised {exc!r}.")
     print("LINE: every OA refused — nothing was delivered.")
     return False
+
+
+def check_channels() -> bool:
+    """Verify every configured OA answers, and print its remaining monthly allowance.
+
+    The transition alert is the message that actually matters, and it fires a handful of
+    times a YEAR — between 2026-08-05 and 2026-09-14 not one went out, because the verdict
+    never changed. So a revoked or rotated token on this side can sit dead for months and
+    only announce itself by swallowing the sell signal it existed to deliver. These three
+    endpoints are reads: they cost no quota, so the cron can afford them on every run.
+
+    Returns False only when NO configured OA answers — one dead OA still has a failover.
+    """
+    configured = [
+        (name, tok)
+        for name, tok in (("primary", settings.line_channel_access_token),
+                          ("fallback", settings.line_channel_access_token_2))
+        if tok
+    ]
+    if not configured:
+        print("LINE: no channel token configured — alerts cannot be delivered.")
+        return False
+
+    alive = 0
+    for name, tok in configured:
+        headers = {"Authorization": f"Bearer {tok}"}
+        try:
+            info = httpx.get(LINE_INFO, headers=headers, timeout=15)
+            if info.status_code >= 300:
+                print(f"LINE: {name} OA token REJECTED ({info.status_code}) — rotate it.")
+                continue
+            alive += 1
+            oa = info.json().get("basicId", "?")
+            quota = httpx.get(LINE_QUOTA, headers=headers, timeout=15).json()
+            used = httpx.get(LINE_CONSUMPTION, headers=headers, timeout=15).json().get("totalUsage", 0)
+            cap = quota.get("value")
+            left = "unlimited" if cap is None else f"{cap - used} of {cap} left"
+            print(f"LINE: {name} OA {oa} ok — {left} this month.")
+        except Exception as exc:  # noqa: BLE001
+            # A network blip here says nothing about the token; do not cry wolf.
+            print(f"LINE: {name} OA health check inconclusive ({exc!r}).")
+            alive += 1
+    if not alive:
+        print("LINE: every configured OA rejected its token — NO alert can be delivered.")
+    return alive > 0
 
 
 def _latest_buy_in(sb) -> float | None:
