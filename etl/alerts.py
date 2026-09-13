@@ -21,6 +21,9 @@ from . import state
 from .config import settings
 
 LINE_BROADCAST = "https://api.line.me/v2/bot/message/broadcast"
+LINE_INFO = "https://api.line.me/v2/bot/info"
+LINE_QUOTA = "https://api.line.me/v2/bot/message/quota"
+LINE_CONSUMPTION = "https://api.line.me/v2/bot/message/quota/consumption"
 
 _VERDICT_TH = {
     "hold": "ถือไว้",
@@ -33,11 +36,23 @@ _LEVEL = {"hold": 0, "trim": 1, "sell_tranche": 2, "sell": 3}
 
 def send_line_broadcast(text: str) -> bool:
     """Broadcast with OA failover: primary OA first; if it fails (esp. 429 = the free
-    300-msg/month quota is exhausted), retry from the secondary OA. Two free OAs ≈ 600/mo."""
-    tokens = [t for t in (settings.line_channel_access_token, settings.line_channel_access_token_2) if t]
+    300-msg/month quota is exhausted), retry from the secondary OA. Two free OAs ≈ 600/mo.
+
+    Every outcome is printed. A swallowed failure here is indistinguishable from "nothing
+    to say" in the cron log, and that is exactly how a dead alert path stays dead: on
+    2026-08-24 the primary OA's quota ran out, the failover did not exist yet, and the only
+    evidence anyone had was a family member noticing the silence.
+    """
+    tokens = [
+        (name, tok)
+        for name, tok in (("primary", settings.line_channel_access_token),
+                          ("fallback", settings.line_channel_access_token_2))
+        if tok
+    ]
     if not tokens:
+        print("LINE: no channel token configured — cannot broadcast.")
         return False
-    for tok in tokens:
+    for name, tok in tokens:
         try:
             resp = httpx.post(
                 LINE_BROADCAST,
@@ -46,10 +61,59 @@ def send_line_broadcast(text: str) -> bool:
                 timeout=20,
             )
             if resp.status_code < 300:
+                print(f"LINE: broadcast sent from the {name} OA.")
                 return True
-        except Exception:  # noqa: BLE001
-            continue
+            spent = " — monthly quota spent" if resp.status_code == 429 else ""
+            print(f"LINE: {name} OA refused ({resp.status_code}){spent}.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"LINE: {name} OA raised {exc!r}.")
+    print("LINE: every OA refused — nothing was delivered.")
     return False
+
+
+def check_channels() -> bool:
+    """Verify every configured OA answers, and print its remaining monthly allowance.
+
+    The transition alert is the message that actually matters, and it fires a handful of
+    times a YEAR — between 2026-08-05 and 2026-09-14 not one went out, because the verdict
+    never changed. So a revoked or rotated token on this side can sit dead for months and
+    only announce itself by swallowing the sell signal it existed to deliver. These three
+    endpoints are reads: they cost no quota, so the cron can afford them on every run.
+
+    Returns False only when NO configured OA answers — one dead OA still has a failover.
+    """
+    configured = [
+        (name, tok)
+        for name, tok in (("primary", settings.line_channel_access_token),
+                          ("fallback", settings.line_channel_access_token_2))
+        if tok
+    ]
+    if not configured:
+        print("LINE: no channel token configured — alerts cannot be delivered.")
+        return False
+
+    alive = 0
+    for name, tok in configured:
+        headers = {"Authorization": f"Bearer {tok}"}
+        try:
+            info = httpx.get(LINE_INFO, headers=headers, timeout=15)
+            if info.status_code >= 300:
+                print(f"LINE: {name} OA token REJECTED ({info.status_code}) — rotate it.")
+                continue
+            alive += 1
+            oa = info.json().get("basicId", "?")
+            quota = httpx.get(LINE_QUOTA, headers=headers, timeout=15).json()
+            used = httpx.get(LINE_CONSUMPTION, headers=headers, timeout=15).json().get("totalUsage", 0)
+            cap = quota.get("value")
+            left = "unlimited" if cap is None else f"{cap - used} of {cap} left"
+            print(f"LINE: {name} OA {oa} ok — {left} this month.")
+        except Exception as exc:  # noqa: BLE001
+            # A network blip here says nothing about the token; do not cry wolf.
+            print(f"LINE: {name} OA health check inconclusive ({exc!r}).")
+            alive += 1
+    if not alive:
+        print("LINE: every configured OA rejected its token — NO alert can be delivered.")
+    return alive > 0
 
 
 def _latest_buy_in(sb) -> float | None:
@@ -84,7 +148,7 @@ def _transition_message(prev: str, cur: str, score: float, buy_in: float | None,
     return f"{body}\nดูรายละเอียด: {settings.dashboard_url}"
 
 
-def alert_on_transition(sb, scores, *, buy_in: float | None = None, extra: str = "") -> bool:
+def alert_on_transition(sb, scores, *, buy_in: float | None = None, extra: str = "") -> str:
     """Broadcast iff the latest verdict differs from the last one we alerted on.
 
     Missing state anchors to a NEUTRAL 'hold' baseline, NOT the live verdict: a standing
@@ -92,10 +156,15 @@ def alert_on_transition(sb, scores, *, buy_in: float | None = None, extra: str =
     silently adopted — the bug that swallowed the 2026-07-08 sell. At 'hold' there is
     nothing to announce, so the baseline is just persisted once and no spurious deploy-time
     alert goes out. State advances only after a successful send, so a LINE outage retries.
+
+    Returns a STATUS, not a bool: "sent", "none" (no transition to announce), "baseline"
+    (first run — the neutral anchor was persisted) or "failed" (a real transition that LINE
+    would not take). The caller must not collapse the last two into one cheerful "No alert."
+    — a dropped sell signal and a quiet market would print the same line.
     """
     valid = scores.dropna(subset=["sell_pressure"])
     if not len(valid):
-        return False
+        return "none"
     row = valid.iloc[-1]
     cur = row["verdict"]
     cur_date = valid.index[-1].date().isoformat()
@@ -105,12 +174,28 @@ def alert_on_transition(sb, scores, *, buy_in: float | None = None, extra: str =
     if cur == last_verdict:
         if stored_verdict is None:
             state.set_alert_state(sb, cur, cur_date, _LEVEL.get(cur, 0))  # persist baseline once
-        return False
+            return "baseline"
+        return "none"
 
     if buy_in is None:
         buy_in = _latest_buy_in(sb)
     msg = _transition_message(last_verdict, cur, float(row["sell_pressure"]), buy_in, extra, as_of=cur_date)
     if send_line_broadcast(msg):
         state.set_alert_state(sb, cur, cur_date, _LEVEL.get(cur, 0))
-        return True
-    return False
+        return "sent"
+    # State deliberately NOT advanced: the next cron run retries this same transition.
+    print(f"LINE: transition {last_verdict} -> {cur} was NOT delivered; will retry next run.")
+    return "failed"
+
+
+_STATUS_LINE = {
+    "sent": "LINE transition alert sent.",
+    "none": "No alert (no verdict change).",
+    "baseline": "No alert (alert baseline initialised).",
+    "failed": "ALERT UNDELIVERED — verdict changed but LINE refused; retrying next run.",
+}
+
+
+def status_line(status: str) -> str:
+    """One-line cron summary for an alert_on_transition() status."""
+    return _STATUS_LINE.get(status, f"Alert status: {status}.")

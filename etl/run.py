@@ -99,11 +99,11 @@ def main() -> None:
     from . import advice
     advice.topup_premium(sb)
     extra = advice.advice_line(advice.build_advice(sb))
-    sent = alerts.alert_on_transition(sb, scores, buy_in=tick.bar_buy, extra=extra)
+    alert_status = alerts.alert_on_transition(sb, scores, buy_in=tick.bar_buy, extra=extra)
 
     print(f"OK: buy-in {tick.bar_buy:,.0f}; sell-pressure {latest['sell_pressure']:.0f}/100 -> {latest['verdict']}")
     print(f"Upserted 1 tick, {n_daily} daily, {n_sig} signal rows ({'FULL' if full else 'tail-30'}). "
-          f"{'LINE transition alert sent.' if sent else 'No alert.'}")
+          f"{alerts.status_line(alert_status)}")
 
 
 if __name__ == "__main__":

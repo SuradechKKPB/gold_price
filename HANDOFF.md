@@ -129,7 +129,7 @@ T+1.
 | **Vercel** | Project `suradechks-projects/gold-price`, prod alias **gold-price-gamma.vercel.app**. Deploy: `cd web && vercel deploy --prod`. ⚠️ git auto-deploy needs Root Directory = `web` set in dashboard. |
 | **Cloudflare** | Worker **gold-digest**, https://gold-digest.suradech-k.workers.dev, account `bd8c811695995b9c36ee321b4a7f81d6` (suradech.k@pontawee.com). wrangler OAuth already authed on this Mac. Free plan: **max 5 cron triggers/account**. gold-digest uses **1** (`0 8,23 * * *` — one trigger, two firings; the ceiling counts triggers, not firings). |
 | **GitHub** | github.com/SuradechKKPB/gold_price. `gh` authed as SuradechKKPB. Actions runs the compute cron. |
-| **LINE** | Primary OA **@514hgwyf** ("ราคาทอง"); fallback OA **@905fmqos** ("OnePetro"). Both free plan = **300 msgs/month**, broadcast counts per follower. **5 family followers, all on both OAs.** |
+| **LINE** | Primary OA **@514hgwyf** ("ราคาทอง"); fallback OA **@905fmqos** ("ราคาทอง V2"). Both free plan = **300 msgs/month**, broadcast counts per follower. **Followers are NOT symmetric: 8 on the primary, 5 on the fallback** (measured 2026-09-14 via `/v2/bot/insight/followers`). The 3 who follow only the primary go dark the moment failover happens — see §7. |
 
 ---
 
@@ -180,12 +180,34 @@ silently overwrites the previous day's close with a later price.
   ⚠️ **Family must add BOTH OAs as friends** to receive during whichever OA is active.
   Quota resets at the start of each month.
 
-**Budget:** 5 followers × 2 digests × ~30 days = **300/mo**, which is exactly one OA's
-free allowance — so the primary runs dry near month-end every month and the remainder
-comes from the fallback. Headroom for transition alerts is the second OA's balance. Adding
-any third sender, or a sixth follower, eats into that directly. If it ever gets tight, the
-fix is `push` to a single LINE **group** (billed as 1 message, not per follower), which
-would cut usage 5×.
+**Budget (re-measured 2026-09-14 — the old "5 followers" figure was stale):** the primary
+OA now has **8** followers, so a day costs 8 × 2 digests = **16 messages**, and its 300/mo
+allowance is spent in **~18.75 days**, not 30. Observed: 216/300 consumed by 13 Sep, i.e.
+the wall lands about **19 Sep** and the same thing happens every month.
+
+That by itself is survivable — failover moves the send to @905fmqos. What is NOT survivable
+is that **only 5 of the 8 followers are on the fallback OA**, so from the wall to month-end
+**3 people receive nothing at all**. This already happened once: the primary ran dry on
+**24 Aug 2026** (no digest went out that day from either OA — the failover did not exist
+yet, it was committed the next morning), and from **25 Aug** the fallback carried the month
+at 10 msgs/day, i.e. reaching 5 people instead of 8. Delivery counts per OA per day are
+readable from `/v2/bot/insight/message/delivery?date=YYYYMMDD`.
+
+Two ways out, in order of preference:
+1. **`push` to a single LINE group** instead of `broadcast`. A group push bills as **one**
+   message no matter how many people are in it: 2/day = ~60/month against a 300 allowance,
+   with room for transition alerts and for the family to grow. This removes the per-follower
+   cliff permanently and is the fix this section has recommended since it was written. It
+   needs a `groupId`, which only arrives on a webhook `join` event when the OA is invited
+   into a group, so it cannot be done from the repo alone.
+2. **Get the 3 primary-only followers onto @905fmqos as well** — *chosen 2026-09-14*.
+   Invite link: `https://line.me/R/ti/p/@905fmqos`. This does not remove the monthly
+   cliff, but it makes failover reach all 8, which is the part that actually hurt. Check
+   it landed with the `insight/followers` call in §9: the fallback should read 8, not 5.
+   Note the arithmetic afterwards — at 8 followers each OA lasts ~18.75 days, so the two
+   together cover ~37 days and the month closes with headroom. A **ninth** follower breaks
+   that (2 × 300 ÷ 18 = 33 days is fine, but the margin is thin), so option 1 is still the
+   answer the moment the audience grows again.
 
 ---
 
@@ -224,8 +246,22 @@ printf '%s' "<value>" | npx wrangler@4 secret put <NAME>                       #
 ./node_modules/.bin/next build              # build (pnpm run is gated by sharp; call next directly)
 vercel deploy --prod                         # deploy prod
 
-# --- LINE quota check ---
+# --- "LINE stopped working" — the three questions, in order ------------------
+# 1. Is the token alive and how much allowance is left?  (400/401 = dead token)
+curl -H "Authorization: Bearer <TOKEN>" https://api.line.me/v2/bot/info
+curl -H "Authorization: Bearer <TOKEN>" https://api.line.me/v2/bot/message/quota         # {"value":300}
 curl -H "Authorization: Bearer <TOKEN>" https://api.line.me/v2/bot/message/quota/consumption
+# 2. Did messages actually go out, and on which day did they stop?  Run it for BOTH OAs:
+#    apiBroadcast = messages delivered that day = followers × sends. Lags ~1 day.
+curl -H "Authorization: Bearer <TOKEN>" \
+  "https://api.line.me/v2/bot/insight/message/delivery?date=20260913"
+# 3. How many people would a send from this OA actually reach?
+curl -H "Authorization: Bearer <TOKEN>" \
+  "https://api.line.me/v2/bot/insight/followers?date=20260912"
+#    Primary and fallback DO NOT have the same followers — see §7.
+
+# Watch a digest fire live (crons at 23:00 / 08:00 UTC); every send now logs its outcome:
+cd worker && npx wrangler@4 tail --format json
 ```
 
 Dev server: the `web` config in this repo's `.claude/launch.json` runs `pnpm --dir web dev`
@@ -235,9 +271,16 @@ on **:3000**.
 
 ## 10. Known issues / gotchas
 
-- **LINE free quota (300/mo/OA)** is the binding constraint, and the current cadence spends
-  one full OA (see §7). Failover to a 2nd OA buys ~600/mo; beyond that, push-to-group
-  (1 msg/send, 5× cheaper), reduce frequency, or a paid OA plan.
+- **LINE free quota (300/mo/OA)** is the binding constraint, and at 8 followers the cadence
+  now spends one full OA in ~19 days, not 30 (see §7). Failover covers the rest of the
+  month but only reaches the 5 people who follow the fallback OA, so **3 followers go dark
+  from ~19th to month-end, every month.** The durable fix is push-to-group (1 msg/send
+  regardless of headcount); the stopgap is getting those 3 onto the fallback OA too.
+- **A LINE channel that goes quiet cannot report its own silence.** Both senders now print
+  every outcome (which OA served, the status code, messages left) and `etl.compute` exits
+  non-zero when a real verdict transition could not be delivered, so a dropped alert shows
+  up as a red GitHub Actions run instead of a cheerful "No alert." in a green log. Check
+  delivery from the outside with the two LINE endpoints in §9.
 - **Association price refreshes 2×/day only.** Not a cron-count limit: gold-digest now
   fits both digests in one trigger, so slots are free. Going more frequent means widening
   the cron expression and branching on `event.scheduledTime` so only 08:00/23:00 UTC

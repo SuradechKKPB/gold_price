@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 from supabase import Client, create_client
 
+from . import db
 from .config import settings
 from .gta import GoldTick
 
@@ -12,6 +13,9 @@ from .gta import GoldTick
 def client() -> Client:
     if not settings.has_supabase:
         raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set")
+    # Supabase's edge throws the occasional 504 that is gone a second later, and without
+    # this the whole cron run dies on it — see etl/db.py for the two runs it killed.
+    db.install()
     return create_client(settings.supabase_url, settings.supabase_service_role_key)
 
 

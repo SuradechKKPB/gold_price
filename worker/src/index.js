@@ -103,29 +103,48 @@ function trailFrom(recentHigh, livePrice, ddStored) {
   return { dd: (high - livePrice) / high, high, live: true };
 }
 
+/** Retry-once, never-throw wrapper for a read the card can live without.
+ *
+ *  Every Supabase read in the digest is OPTIONAL, and until now none of them said so:
+ *  buildMessage awaited two bare jget()s, so a single transient PostgREST 5xx threw out
+ *  of sendDigest and the whole digest silently evaporated — no card, no failover, no log.
+ *  That is not hypothetical: Supabase answered this project with 504 "Gateway Timeout" on
+ *  2026-09-13 and took a GitHub compute run down with it. The same blip landing 40 minutes
+ *  later would have cost the 06:00 card instead.
+ *
+ *  A blip is usually over within a second, so try twice; if it is not, drop that ONE line
+ *  and send the rest. The live-price lines come from feeds that have nothing to do with
+ *  Supabase, so a degraded card still tells the family what gold costs this morning.
+ */
+async function soft(label, fn) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try { return await fn(); }
+    catch (e) { console.log(`digest: ${label} attempt ${attempt} failed: ${e}`); }
+  }
+  return null;
+}
+
 async function buildMessage(env) {
   const H = supaHeaders(env, false);
-  const [sig] = await jget(
+  const [sig] = (await soft("signals_daily", () => jget(
     `${env.SUPABASE_URL}/rest/v1/signals_daily?select=trade_date,sell_pressure,verdict&order=trade_date.desc&limit=1`,
     { headers: H },
-  );
-  const [px] = await jget(
+  ))) ?? [];
+  const [px] = (await soft("gold_price_daily", () => jget(
     `${env.SUPABASE_URL}/rest/v1/gold_price_daily?select=bar_buy_close&order=trade_date.desc&limit=1`,
     { headers: H },
-  );
+  ))) ?? [];
 
   // The trailing-stop state. The score cannot express this: trend_break is 40% of the
   // weight and stays 0 until price is 3% below the recent high, so a digest carrying only
   // the score is silent on where price stands while a top is forming. The stored dd is the
   // fallback for when the live feeds are down — see trailFrom().
   const trailOf = async (series) => {
-    try {
-      const [r] = await jget(
-        `${env.SUPABASE_URL}/rest/v1/macro_daily?select=value&series=eq.${series}&order=trade_date.desc&limit=1`,
-        { headers: H },
-      );
-      return r?.value ?? null;
-    } catch (e) { return null; }
+    const [r] = (await soft(series, () => jget(
+      `${env.SUPABASE_URL}/rest/v1/macro_daily?select=value&series=eq.${series}&order=trade_date.desc&limit=1`,
+      { headers: H },
+    ))) ?? [];
+    return r?.value ?? null;
   };
   const [ddStored, recentHigh] = await Promise.all([trailOf("dd_from_high"), trailOf("recent_high_40")]);
 
@@ -145,8 +164,25 @@ async function buildMessage(env) {
     lines.push(`ต่ำกว่ายอด 40 วัน ${(trail.dd * 100).toFixed(1)}% (ยอด ${nf.format(Math.round(trail.high))})${asOf}`);
   }
   if (sig?.trade_date) lines.push(`ข้อมูล ณ ${sig.trade_date}`);
+  // Everything above the link is optional now (see soft()), so count what actually made it.
+  // A card of nothing but a header and a URL is worse than no card: it spends per-follower
+  // quota to tell the family that the pipeline is broken, which the dashboard says better.
+  const dataLines = lines.length - 1;
   lines.push(`ดูรายละเอียด: ${env.DASHBOARD_URL}`);
-  return lines.join("\n");
+  return { text: lines.join("\n"), dataLines };
+}
+
+/** Messages left on an OA's free monthly allowance, or null if LINE won't say.
+ *  Purely for the log: the send path still discovers exhaustion from the 429 itself. */
+async function quotaLeft(tok) {
+  try {
+    const H = { Authorization: `Bearer ${tok}` };
+    const [q, c] = await Promise.all([
+      jget("https://api.line.me/v2/bot/message/quota", { headers: H }),
+      jget("https://api.line.me/v2/bot/message/quota/consumption", { headers: H }),
+    ]);
+    return q?.value == null ? null : q.value - (c?.totalUsage ?? 0);
+  } catch (e) { return null; }
 }
 
 // Broadcast with OA failover: send from the primary OA; if it fails (esp. 429 = the free
@@ -166,8 +202,12 @@ async function lineBroadcast(env, text) {
         body,
       });
       if (resp.ok) return { ok: true, oa, status: resp.status };
+      // 429 here is the free 300-msg/month allowance running out mid-month. It is the most
+      // common way this Worker goes quiet, and it used to leave no trace anywhere.
+      console.log(`digest: ${oa} OA refused (${resp.status})${resp.status === 429 ? " — monthly quota spent" : ""}`);
       last = { ok: false, oa, status: resp.status };
     } catch (e) {
+      console.log(`digest: ${oa} OA threw ${e}`);
       last = { ok: false, oa, status: -1 };
     }
   }
@@ -175,10 +215,25 @@ async function lineBroadcast(env, text) {
 }
 
 async function sendDigest(env) {
-  try { await syncGta(env); } catch (e) { /* market closed / GTA hiccup: fall back to latest stored price */ }
-  const text = await buildMessage(env);
-  const r = await lineBroadcast(env, text);
-  return { ...r, text };
+  try { await syncGta(env); }
+  catch (e) { console.log(`digest: GTA sync failed (${e}) — falling back to the last stored price`); }
+
+  let card = null;
+  try { card = await buildMessage(env); }
+  catch (e) { console.log(`digest: buildMessage threw ${e}`); }
+
+  if (!card || card.dataLines === 0) {
+    console.log("digest: NOT SENT — no data line survived (Supabase and both live feeds down?)");
+    return { ok: false, oa: null, status: 0, reason: "no-data" };
+  }
+
+  const r = await lineBroadcast(env, card.text);
+  const left = r.ok ? await quotaLeft(r.oa === "primary" ? env.LINE_CHANNEL_ACCESS_TOKEN : env.LINE_CHANNEL_ACCESS_TOKEN_2) : null;
+  console.log(
+    `digest: ${r.ok ? "SENT" : "NOT SENT"} via ${r.oa ?? "no OA"} (status ${r.status}), ` +
+    `${card.dataLines} data lines${left == null ? "" : `, ${left} msgs left on that OA`}`,
+  );
+  return { ...r, text: card.text };
 }
 
 export default {
@@ -194,7 +249,7 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     const ok = url.searchParams.get("key") && url.searchParams.get("key") === env.TRIGGER_KEY;
-    if (url.pathname === "/preview" && ok) return new Response(await buildMessage(env), { headers: { "content-type": "text/plain; charset=utf-8" } });
+    if (url.pathname === "/preview" && ok) return new Response((await buildMessage(env)).text, { headers: { "content-type": "text/plain; charset=utf-8" } });
     if (url.pathname === "/sync" && ok) {
       try { return new Response(JSON.stringify(await syncGta(env), null, 2), { headers: { "content-type": "application/json" } }); }
       catch (e) { return new Response(JSON.stringify({ error: String(e) }), { status: 200 }); }
