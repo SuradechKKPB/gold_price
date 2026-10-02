@@ -17,11 +17,9 @@
 // 23:00 UTC send, while the rest sync GTA only.
 
 const CONV = (15.244 / 31.1034768) * 0.965; // THB per baht-weight of 96.5% bar, per XAU×USDTHB
-// v4 verdicts (etl/signals.py). The v3 names stay so a digest rendered before the ETL's
-// first v4 run (deploy order) still reads in Thai; drop them once signals_daily is v4.
+// Verdicts of the v4 score (etl/signals.py VERDICTS).
 const VERDICT_TH = {
   weak: "ราคาอ่อนตัว (ยังไม่ควรขาย)", neutral: "ปกติ", rich: "โซนแพง", very_rich: "โซนแพงมาก (จังหวะขาย)",
-  hold: "ถือไว้", trim: "ลดพอร์ตเล็กน้อย", sell_tranche: "ขายบางส่วน", sell: "ขายออก",
 };
 const ACTION_TH = { sell: "ขายไม้นี้ได้", wait: "รอก่อน (ราคาอ่อน)", hold: "ถือรอ", done: "ครบตามแผนแล้ว", ended: "จบแผนแล้ว" };
 const thDate = (iso) => new Date(`${iso}T00:00:00+07:00`).toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok", day: "numeric", month: "short" });

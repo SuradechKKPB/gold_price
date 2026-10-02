@@ -1,6 +1,5 @@
-/** v4 verdicts grade the DAY (etl/signals.py). The v3 names are still accepted so a page
- *  rendered before the ETL's first v4 run does not break; drop them once signals_daily is v4. */
-export type Verdict = "weak" | "neutral" | "rich" | "very_rich" | "hold" | "trim" | "sell_tranche" | "sell";
+/** v4 verdicts grade the DAY (etl/signals.py VERDICTS). */
+export type Verdict = "weak" | "neutral" | "rich" | "very_rich";
 
 /** signals_daily kept its v3 columns (no migration); in v4 they carry:
  *  sell_pressure = rich (0-100) · overbought = percentile of price vs SMA50 ·
