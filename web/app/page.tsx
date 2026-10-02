@@ -1,12 +1,12 @@
 import PriceChart from "@/components/PriceChart";
-import { BacktestTable, BucketBars, DxyPanel, IndicatorsTable, KeyLevels, ScoreGauge, TrailStop, TruthFeed, VerdictChip } from "@/components/ui";
+import { BacktestTable, BucketBars, DxyPanel, IndicatorsTable, KeyLevels, PlanPanel, ScoreGauge, TrailStop, TruthFeed, VerdictChip } from "@/components/ui";
 import { drawdown, sma } from "@/lib/indicators";
 import { computeTA } from "@/lib/ta";
 import { fetchTrumpPosts } from "@/lib/trump";
 import { bahtWeight, bangkokDate, calDate, newsDate, num, pct, thb } from "@/lib/format";
 import { fetchCalendar, fetchNews } from "@/lib/news";
 import { fetchRealtimeGold } from "@/lib/realtime";
-import { getBacktest, getIntlHistory, getLatestSignal, getLatestTick, getPriceHistory, getTrailState } from "@/lib/queries";
+import { getBacktest, getIntlHistory, getLatestSignal, getLatestTick, getPlanStatus, getPriceHistory, getTrailState } from "@/lib/queries";
 import { DXY_TABLE, fetchCurrentDxy } from "@/lib/dxy";
 
 // Decision tool: always render the current score from the DB — never serve a stale
@@ -14,34 +14,30 @@ import { DXY_TABLE, fetchCurrentDxy } from "@/lib/dxy";
 export const dynamic = "force-dynamic";
 
 const SIGNAL_LABELS: Record<string, string> = {
-  trailing_stop_fired: "เบรกจากจุดสูงสุด (trailing stop)",
-  secular_confirm: "ยืนยันเทรนด์ขาลงระยะยาว",
-  below_200dma: "หลุดเส้นค่าเฉลี่ย 200 วัน",
-  death_cross: "เดธครอส 50/200",
-  below_40w_low: "หลุดจุดต่ำสุด 40 สัปดาห์",
-  rsi_weekly_gt70: "RSI รายสัปดาห์ > 70",
-  stretch_gt18pct: "สูงกว่าเส้น 200 วัน > 18%",
-  pctb_gt1: "เหนือกรอบบอลลินเจอร์บน",
-  macd_bearish: "MACD รายสัปดาห์เป็นขาลง",
+  brake: "เบรก: ราคาอ่อนตัวจากยอด",
+  stretched_above_sma50: "ยืดเหนือเส้น 50 วัน (บน 10%)",
+  sharp_rally_from_low: "วิ่งขึ้นแรงจากจุดต่ำ 40 วัน (บน 10%)",
+  at_recent_high: "อยู่ที่ยอด 40 วัน",
 };
 
 export default async function Page() {
-  const grams = Number(process.env.GOLD_GRAMS ?? 900);
+  const grams = Number(process.env.GOLD_GRAMS ?? 1000);
   const bw = bahtWeight(grams);
   const showHolding = process.env.SHOW_HOLDING === "true"; // default: hide personal holding on the public page
 
-  const [signal, tick, prices, intlPrices, runs, news, events, realtime, trump, dxyNow, trail] = await Promise.all([
+  const [signal, tick, prices, intlPrices, runs, news, events, realtime, trump, dxyNow, trail, plan] = await Promise.all([
     getLatestSignal(),
     getLatestTick(),
     getPriceHistory(),
     getIntlHistory(),
-    getBacktest(252),
+    getBacktest(63), // the live plan is a ~3-month campaign
     fetchNews(),
     fetchCalendar(),
     fetchRealtimeGold(),
     fetchTrumpPosts(),
     fetchCurrentDxy(),
     getTrailState(),
+    showHolding ? getPlanStatus() : Promise.resolve(null), // personal: hidden on the public page
   ]);
 
   // Score + technical analysis run on the WORLD gold price in THB (intlPrices); the
@@ -64,11 +60,9 @@ export default async function Page() {
 
   const buckets = signal
     ? [
-        { label: "เบรกเทรนด์", value: signal.trend_break },
-        { label: "ซื้อมากเกินไป", value: signal.overbought },
-        { label: "โมเมนตัม", value: signal.momentum },
-        { label: "ดอลลาร์ (DXY)", value: signal.fa_score },
-        { label: "ฤดูกาล", value: signal.seasonality },
+        { label: "เหนือเส้น 50 วัน", value: signal.overbought },
+        { label: "วิ่งจากจุดต่ำ", value: signal.momentum },
+        { label: "ลึกเทียบเบรก", value: signal.trend_break },
       ]
     : [];
 
@@ -126,7 +120,7 @@ export default async function Page() {
           )}
         </div>
         <div>
-          {signal && <ScoreGauge score={signal.sell_pressure} />}
+          {signal && <ScoreGauge score={signal.sell_pressure} verdict={signal.verdict} />}
           <div className="muted mono" style={{ fontSize: 11, marginTop: 6, textAlign: "right" }}>
             ฐานคะแนน: ราคาทองสากล (THB)
           </div>
@@ -136,32 +130,36 @@ export default async function Page() {
         </div>
       </section>
 
+      {plan && (
+        <section className="panel" style={{ padding: 24, marginTop: 20 }}>
+          <PlanPanel plan={plan} />
+        </section>
+      )}
+
       {/* Score explained */}
       <section className="panel" style={{ padding: 24, marginTop: 20 }}>
         <h2 className="serif" style={{ fontSize: 20, fontWeight: 500 }}>
           อ่านคะแนนอย่างไร
         </h2>
         <p className="muted" style={{ fontSize: 13, marginTop: 6, lineHeight: 1.55 }}>
-          0 = ถือ, 100 = แรงกดดันขายสูงสุด · ออกแบบให้ <b style={{ color: "var(--text)" }}>คะแนนพุ่งตอนราคาเพิ่งหลุดจากจุดสูงสุด</b> (จังหวะ ‘capture the high’)
-          แล้วค่อยๆ จางลงเมื่อราคาตกไปลึกและนานแล้ว — มีตัวยืนยันเทรนด์ขาลงระยะยาวกันพลาดกรณีตลาดหมีจริง · คะแนนและตัวชี้วัดคิดจาก
-          <b style={{ color: "var(--text)" }}>ราคาทองสากลแปลงเป็นบาท</b> (XAU×USDTHB) ไม่ใช่ราคาสมาคม จึงไม่สะดุดเวลาพรีเมียมในประเทศแกว่ง — ส่วนราคาที่ขายได้จริงยังอิงราคารับซื้อสมาคมฯ{signal ? ` · ตัวเลขด้านล่าง = ค่าจริงวันที่ ${signal.trade_date}` : ""}
+          คะแนนบอกว่า <b style={{ color: "var(--text)" }}>วันนี้เป็นวันขายที่ดีแค่ไหน</b> ไม่ได้บอกว่าควรขายเท่าไหร่ ·
+          ความเร็วในการขายเป็นของ<b style={{ color: "var(--text)" }}>แผน</b> (ขายกี่กรัม ภายในเมื่อไหร่) · 100 = ราคาแข็งกว่าทุกวันในรอบ 3 ปี ·
+          ≥90 = โซนแพงมาก แผนขายไม้ของช่วงนั้นก่อนกำหนดได้ · ราคาย่อจากยอดเกินเส้นเบรก = วันอ่อน ไม้ที่ครบกำหนดรอได้ ·
+          คิดจาก<b style={{ color: "var(--text)" }}>ราคาทองสากลแปลงเป็นบาท</b> (XAU×USDTHB) ส่วนราคาที่ขายได้จริงอิงราคารับซื้อสมาคมฯ
+          {signal ? ` · ตัวเลขด้านล่าง = ค่าจริงวันที่ ${signal.trade_date}` : ""}
         </p>
         <div style={{ display: "grid", gap: 16, marginTop: 14 }}>
           {[
-            { name: "คะแนนรวม", weight: "0–100", cur: signal?.sell_pressure, desc: "ภาพรวมแรงกดดันให้ขาย — เกณฑ์: ≥44 เริ่มลดพอร์ต · ≥52 ขายบางส่วน · ≥60 (พร้อมสัญญาณเบรกเทรนด์ ≥2 ตัว) ขายออก · verdict มี hysteresis กันสลับไปมา · หมายเหตุสำคัญ: ข้อมูล 20 ปีมีกรอบเวลา 12 เดือนที่ไม่ทับซ้อนกันแค่ 23 กรอบ ซึ่งไม่พอจะพิสูจน์ว่าคะแนนนี้ชนะการทยอยขายแบบ DCA — ใช้เป็น ‘ตัวช่วยจับจังหวะ’ บนโครง DCA ไม่ใช่ตัวชี้ขาด",
+            { name: "คะแนนรวม", weight: "0–100", cur: signal?.sell_pressure, desc: "ค่าเฉลี่ยของ percentile สองตัวด้านล่าง เทียบกับทุกวันในรอบ ~3 ปีก่อนหน้า (ไม่แอบเห็นอนาคต) · ทั้งสองตัววัด ‘ราคาแข็ง’ และในข้อมูลปี 2006–2026 วันที่สองตัวนี้สูงคือวันที่ขายได้สูงกว่าราคาเฉลี่ย ±3 เดือนรอบตัว ทั้งในตลาดขาขึ้นและขาลง (คะแนนเดิม v3 ขายได้ต่ำกว่าค่าเฉลี่ยนั้น 3–4%)",
               formula: signal
-                ? `= 0.40×${signal.trend_break.toFixed(0)} + 0.25×${signal.overbought.toFixed(0)} + 0.18×${signal.momentum.toFixed(0)} + 0.12×${signal.fa_score.toFixed(0)} + 0.05×${signal.seasonality.toFixed(0)} = ${signal.sell_pressure.toFixed(0)}`
-                : "= 0.40×เบรกเทรนด์ + 0.25×ซื้อมากเกินไป + 0.18×โมเมนตัม + 0.12×ดอลลาร์ + 0.05×ฤดูกาล" },
-            { name: "เบรกเทรนด์", weight: "40%", cur: signal?.trend_break, desc: "ราคาเพิ่งหลุดจากจุดสูงสุดล่าสุดหรือยัง — ดังสุดตอน ‘เบรกสดๆ’ ใกล้ยอด แล้วจางลงเมื่อขาลงเก่าและลึก (ไม่ไล่ขายที่ก้น) · บวกตัวยืนยันขาลงระยะยาว (หลุด 200DMA + เดธครอส + ต่ำสุด 40 สัปดาห์) ที่ไม่จาง กันถือยาวจนตลาดหมีจริง",
-              formula: "= 0.70×(ความแรงเบรก × ความสดของเบรก) + 0.30×(ยืนยันขาลงระยะยาว) · เบรกเปิดเมื่อราคา −3% จากยอด, อิ่มตัวที่ −8%, ความสดจางตามอายุของเบรก" },
-            { name: "ซื้อมากเกินไป", weight: "25%", cur: signal?.overbought, desc: "รวมตัวชี้วัดที่บอกว่าราคา ‘ยืดเกิน’ — RSI รายสัปดาห์, ระยะห่างเหนือเส้น 200 วัน, Bollinger %B, ผลตอบแทน 1 ปี · สูง = เสี่ยงย่อ แต่ขาขึ้นแรงอาจค้างสูงได้นาน จึงใช้เป็นสัญญาณ ‘รัดสตอป’ มากกว่าขายทันที",
-              formula: "= ค่าเฉลี่ย(clip 0–100): %เหนือ200DMA÷26% · (RSI14wk−50)÷30 · (%B−0.5)÷0.5 · ROC252วัน÷50%" },
-            { name: "โมเมนตัม", weight: "18%", cur: signal?.momentum, desc: "MACD รายสัปดาห์แบบต่อเนื่อง: ยิ่งต่ำกว่าเส้น signal และต่ำกว่าเส้นศูนย์มากเท่าไรคะแนนยิ่งสูง (ไม่ใช่ขั้นบันได 0/50/100 อีกต่อไป จึงไม่กระโดดข้ามคืน)",
-              formula: "= 50×clip(ระยะต่ำกว่า signal / ค่าเฉลี่ยระยะในอดีต) + 50×clip(ระยะต่ำกว่าศูนย์ / ค่าเฉลี่ยในอดีต)" },
-            { name: "ดอลลาร์ (DXY)", weight: "12%", cur: signal?.fa_score, desc: "ระดับ Dollar Index เทียบทิศทางทองในบาท — ดอลลาร์แข็ง = ลมต้านทอง → กดดันขายสูง; ดอลลาร์อ่อน = กดดันขายต่ำ (สอดคล้องสถิติก่อนปี 2020 + เศรษฐศาสตร์ · ตารางเดิมกลับทิศเพราะปนข้อมูลปี 2020–26 ที่ดอลลาร์แข็งพร้อมทองพุ่ง = lookahead)",
-              formula: "= map(ช่วง DXY → คะแนน): <80→30 · 80–90→40 · 90–100→55 · 100–110→68 · >110→75" },
-            { name: "ฤดูกาล", weight: "5%", cur: signal?.seasonality, desc: "รูปแบบราคาตามเดือนในอดีต (เช่น มิ.ย. มักอ่อนแรง) · น้ำหนักน้อยเพราะขึ้นกับสภาวะตลาด ไม่แน่นอน · ประเมินแบบ point-in-time (ใช้เฉพาะข้อมูลถึงวันนั้น ไม่แอบเห็นอนาคต)",
-              formula: "= map(ผลตอบแทนเฉลี่ยรายเดือน ‘ถึงวันนั้น’) → เดือนอ่อนแรง = คะแนนสูง" },
+                ? `= (${signal.overbought.toFixed(0)} + ${signal.momentum.toFixed(0)}) ÷ 2 = ${signal.sell_pressure.toFixed(0)}`
+                : "= (percentile เหนือเส้น 50 วัน + percentile วิ่งจากจุดต่ำ 40 วัน) ÷ 2" },
+            { name: "เหนือเส้น 50 วัน", weight: "50%", cur: signal?.overbought, desc: "ราคายืดเหนือค่าเฉลี่ย 50 วันมากแค่ไหน เทียบกับรอบ 3 ปี · สูง = ราคาวิ่งนำค่าเฉลี่ยมาก",
+              formula: "= percentile(ราคา ÷ SMA50 − 1)" },
+            { name: "วิ่งจากจุดต่ำ", weight: "50%", cur: signal?.momentum, desc: "ราคาขึ้นมาจากจุดต่ำสุด 40 วันทำการแรงแค่ไหน · ตัวนี้คือสิ่งที่ v3 ไม่ได้วัด (ส.ค. 2026 ราคาวิ่ง +13.6% ใน 18 วันโดยที่คะแนนเดิมไม่ขยับ)",
+              formula: "= percentile(ราคา ÷ ต่ำสุด 40 วัน − 1)" },
+            { name: "ลึกเทียบเบรก", weight: "เบรก", cur: signal?.trend_break, desc: "ราคาย่อจากยอด 40 วันมาแค่ไหนเมื่อเทียบกับเส้นเบรก (1σ ของราคาใน 1 เดือน) · 100 = ถึงหรือเลยเส้น · ไม่ได้บวกเข้าคะแนน แต่ถ้าถึงเส้นและคะแนนต่ำกว่า 50 จะนับเป็นวันอ่อน",
+              formula: "= min(ระยะจากยอด ÷ เส้นเบรก, 1) × 100" },
           ].map((s) => (
             <div key={s.name} style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
               <div style={{ width: 116, flexShrink: 0 }}>
@@ -231,34 +229,21 @@ export default async function Page() {
       {/* Backtest */}
       <section className="panel" style={{ padding: 24, marginTop: 20 }}>
         <h2 className="serif" style={{ fontSize: 20, fontWeight: 500 }}>
-          ผลทดสอบย้อนหลัง — กรอบ 12 เดือน{btSpan ? ` (ปี ${btSpan})` : ""}
+          ผลทดสอบย้อนหลัง — แผนขาย 3 เดือน 5 ไม้{btSpan ? ` (ปี ${btSpan})` : ""}
         </h2>
         <p className="muted" style={{ fontSize: 13, marginTop: 6, lineHeight: 1.6 }}>
-          “จับยอด” = สัดส่วนของช่วงราคาที่ขายได้จริงในแต่ละกรอบเวลา ตลอดช่วงที่ทองเป็นขาขึ้น การ{" "}
-          <b style={{ color: "var(--text)" }}>ถือไว้</b> ให้ผลดีที่สุด เพราะเทรนด์แทบไม่เคยพลิก — คะแนนจะมีค่าจริงตอนที่เทรนด์กลับตัว
-          ซึ่งในข้อมูลชุดนี้เกิดขึ้นน้อยครั้งเกินกว่าจะวัดได้ · ตารางนี้จึงใช้ <i>เปรียบเทียบพฤติกรรม</i> ของแต่ละกฎ
-          ไม่ใช่ใช้จัดอันดับว่ากฎไหนดีกว่ากัน
+          จำลองแผนแบบเดียวกับที่ใช้จริงในทุกช่วงเวลา แล้วแยกสองคำถามออกจากกัน ·{" "}
+          <b style={{ color: "var(--text)" }}>ทักษะเลือกวัน</b> = ราคาที่ขายได้เทียบค่าเฉลี่ย ±63 วันทำการรอบวันขาย
+          (ตัดผลของเทรนด์ออก บวก = ขายได้สูงกว่าราคาแถวนั้น) ·{" "}
+          <b style={{ color: "var(--text)" }}>เทียบขายปลายช่วง</b> = ราคาเฉลี่ยเทียบแผนเดียวกันที่ขายทุกไม้ตอนครบกำหนด ·
+          วันขายเฉลี่ยยิ่งช้า ยิ่งได้ประโยชน์จากตลาดขาขึ้น (และเสียในตลาดขาลง) ซึ่งไม่ใช่ทักษะ — แถวสุดท้ายแสดงให้เห็น
         </p>
         <div className="muted mono" style={{ fontSize: 11, marginTop: 12 }}>
-          OOS = ทดสอบช่วงนอกตัวอย่าง (window เริ่มปี 2020) · ⚠️ ทุกกรอบเวลาในตารางทับซ้อนกัน ~99%
-          จำนวนตัวอย่างที่เป็นอิสระจริงมีแค่ 23 กรอบ — ส่วนต่างเล็กน้อยระหว่างแถวไม่มีนัยสำคัญ
+          เลือกพารามิเตอร์จากแผนที่เริ่มก่อนปี 2020 เท่านั้น · ราคาขาย = ราคารับซื้อสมาคมฯ วันถัดไป (T+1) · ผลจริงคาดว่าน้อยกว่านี้
         </div>
         <div style={{ marginTop: 10 }}>
           <BacktestTable runs={runs} />
         </div>
-        {dd.dropPct < 0 && (
-          <div className="panel" style={{ background: "var(--panel2)", padding: 16, marginTop: 16 }}>
-            <div className="muted" style={{ fontSize: 12, letterSpacing: 0.4 }}>
-              ข้อยกเว้น — ปี 2013
-            </div>
-            <p style={{ fontSize: 14, marginTop: 6, lineHeight: 1.6 }}>
-              ตั้งแต่ {bangkokDate(dd.peakDate).split(" ").slice(0, 3).join(" ")} ราคาทองสากลร่วงลง{" "}
-              <b className="mono" style={{ color: "var(--red)" }}>{pct(dd.dropPct)}</b> มาที่{" "}
-              {bangkokDate(dd.troughDate).split(" ").slice(0, 3).join(" ")} ({thb(dd.peak)} → {thb(dd.trough)} /บาททอง)
-              นี่คือการกลับตัวของเทรนด์ที่เครื่องมือนี้มีไว้เพื่อจับ — ซึ่งค่าเฉลี่ยในตารางด้านบนมองข้ามไป
-            </p>
-          </div>
-        )}
       </section>
 
       {/* Dollar Index regime */}
@@ -268,7 +253,7 @@ export default async function Page() {
         </h2>
         <p className="muted" style={{ fontSize: 13, marginTop: 6, lineHeight: 1.55 }}>
           สถิติย้อนหลัง (ทองคำบาท 2006–2026): แบ่งตามระดับ DXY แล้วดูผลตอบแทนเฉลี่ย / ขาดทุนเฉลี่ย / ผลตอบแทนต่อ max drawdown ใน
-          12 เดือนถัดมา · ระดับปัจจุบันถูกนำมารวมในคะแนน (ส่วน “ดอลลาร์” 12%) · ⚠️ ช่วง &lt;80 และ &gt;110 ตัวอย่างน้อย เชื่อถือได้จำกัด
+          12 เดือนถัดมา · แสดงเป็นบริบทเท่านั้น ไม่ได้อยู่ในคะแนน v4 (ทดสอบแล้วไม่ช่วยเลือกวันขาย) · ช่วง &lt;80 และ &gt;110 ตัวอย่างน้อย เชื่อถือได้จำกัด
         </p>
         <div style={{ marginTop: 16 }}>
           <DxyPanel table={DXY_TABLE} current={dxyNow} />
@@ -349,7 +334,7 @@ export default async function Page() {
       </section>
 
       <footer className="muted" style={{ fontSize: 12, marginTop: 28, lineHeight: 1.6 }}>
-        ใช้เพื่อประกอบการตัดสินใจ ไม่ใช่คำแนะนำการลงทุน · เกณฑ์คะแนนถูกตั้งจากการดูข้อมูลทั้งชุด ผลทดสอบย้อนหลัง
+        ใช้เพื่อประกอบการตัดสินใจ ไม่ใช่คำแนะนำการลงทุน · ตัวชี้วัดของคะแนนถูกเลือกหลังจากดูข้อมูลทั้งชุด ผลทดสอบย้อนหลัง
         จึงเป็นขอบบน ไม่ใช่ผลที่คาดหวัง · ผลในอดีตไม่รับประกันอนาคต · ฐานคะแนน: ราคาทองสากล (LBMA × USD/THB จาก ECB) · ราคารับซื้อจริง:
         สมาคมค้าทองคำแห่งประเทศไทย · ข่าว: Google News · ปฏิทิน: ForexFactory
       </footer>

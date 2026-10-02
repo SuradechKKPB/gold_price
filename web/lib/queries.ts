@@ -1,6 +1,6 @@
 import "server-only";
 import { supabase } from "./supabase";
-import type { BacktestRun, PriceRow, SignalRow, TickRow, TrailState } from "./types";
+import type { BacktestRun, PlanStatus, PriceRow, SignalRow, TickRow, TrailState } from "./types";
 
 async function fetchAll<T>(table: string, cols: string, order: string): Promise<T[]> {
   const out: T[] = [];
@@ -69,13 +69,13 @@ export async function getBacktest(horizonDays: number): Promise<BacktestRun[]> {
   return (data as BacktestRun[]) ?? [];
 }
 
-/** Distance to the recent high that the score's trailing break is measured against.
+/** Distance to the recent high and the band at which the brake engages.
  *
- *  Read, never recomputed: the lookback (40 bars) and the 3%/8% break band live in
- *  etl/indicators.py and etl/signals.py, and a second implementation here would drift
- *  from the score the moment either constant moved. Returns null before etl.compute has
- *  published the series (or if only one of the two rows exists) so the caller can hide
- *  the panel rather than render half of it. */
+ *  Read, never recomputed: the lookback (40 bars) lives in etl/indicators.py and the band
+ *  (k x one-month sigma) in etl/signals.py, and a second implementation here would drift
+ *  from the score the moment either moved. Returns null before etl.compute has published
+ *  the series (or if only one of the two rows exists) so the caller can hide the panel
+ *  rather than render half of it. brakeDd is null until the first v4 run. */
 export async function getTrailState(): Promise<TrailState | null> {
   const latest = async (series: string): Promise<number | null> => {
     const { data } = await supabase
@@ -88,7 +88,28 @@ export async function getTrailState(): Promise<TrailState | null> {
     const v = (data as { value: number } | null)?.value;
     return typeof v === "number" ? v : null;
   };
-  const [ddFromHigh, recentHigh] = await Promise.all([latest("dd_from_high"), latest("recent_high_40")]);
+  const [ddFromHigh, recentHigh, brakeDd] = await Promise.all([
+    latest("dd_from_high"),
+    latest("recent_high_40"),
+    latest("brake_dd"),
+  ]);
   if (ddFromHigh === null || recentHigh === null) return null;
-  return { ddFromHigh, recentHigh };
+  return { ddFromHigh, recentHigh, brakeDd };
+}
+
+/** The sell plan's published decision (etl/plan.py publish → state row `plan_today`). */
+export async function getPlanStatus(): Promise<PlanStatus | null> {
+  const { data } = await supabase
+    .from("macro_daily")
+    .select("source")
+    .eq("trade_date", "2000-01-01") // etl/state.py sentinel date
+    .eq("series", "app_state:plan_today")
+    .maybeSingle();
+  const raw = (data as { source: string | null } | null)?.source;
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as PlanStatus;
+  } catch {
+    return null;
+  }
 }

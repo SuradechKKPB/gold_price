@@ -17,7 +17,14 @@
 // 23:00 UTC send, while the rest sync GTA only.
 
 const CONV = (15.244 / 31.1034768) * 0.965; // THB per baht-weight of 96.5% bar, per XAU×USDTHB
-const VERDICT_TH = { hold: "ถือไว้", trim: "ลดพอร์ตเล็กน้อย", sell_tranche: "ขายบางส่วน", sell: "ขายออก" };
+// v4 verdicts (etl/signals.py). The v3 names stay so a digest rendered before the ETL's
+// first v4 run (deploy order) still reads in Thai; drop them once signals_daily is v4.
+const VERDICT_TH = {
+  weak: "ราคาอ่อนตัว (ยังไม่ควรขาย)", neutral: "ปกติ", rich: "โซนแพง", very_rich: "โซนแพงมาก (จังหวะขาย)",
+  hold: "ถือไว้", trim: "ลดพอร์ตเล็กน้อย", sell_tranche: "ขายบางส่วน", sell: "ขายออก",
+};
+const ACTION_TH = { sell: "ขายไม้นี้ได้", wait: "รอก่อน (ราคาอ่อน)", hold: "ถือรอ", done: "ครบตามแผนแล้ว", ended: "จบแผนแล้ว" };
+const thDate = (iso) => new Date(`${iso}T00:00:00+07:00`).toLocaleDateString("th-TH", { timeZone: "Asia/Bangkok", day: "numeric", month: "short" });
 const nf = new Intl.NumberFormat("en-US");
 const GTA_HEADERS = {
   "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
@@ -81,6 +88,9 @@ async function syncGta(env) {
 
 /** Distance to the published 40-bar high, measured against the LIVE price when there is one.
  *
+ *  In v4 this distance feeds the BRAKE (a tranche due on a weak day may wait), and the
+ *  band it is compared with is published as `brake_dd`, so no threshold is copied here.
+ *
  *  `dd_from_high` as published by etl.compute is derived from the last stored DAILY CLOSE,
  *  so printing it verbatim beside the real-time line puts two clocks in one message. On
  *  2026-08-31 that gap was 1.26pp and it straddled a threshold: the digest said 4.2%
@@ -135,10 +145,9 @@ async function buildMessage(env) {
     { headers: H },
   ))) ?? [];
 
-  // The trailing-stop state. The score cannot express this: trend_break is 40% of the
-  // weight and stays 0 until price is 3% below the recent high, so a digest carrying only
-  // the score is silent on where price stands while a top is forming. The stored dd is the
-  // fallback for when the live feeds are down — see trailFrom().
+  // The brake state: distance below the 40-bar high, and the band at which a weak day
+  // engages the brake. The stored dd is the fallback for when the live feeds are down —
+  // see trailFrom().
   const trailOf = async (series) => {
     const [r] = (await soft(series, () => jget(
       `${env.SUPABASE_URL}/rest/v1/macro_daily?select=value&series=eq.${series}&order=trade_date.desc&limit=1`,
@@ -146,7 +155,18 @@ async function buildMessage(env) {
     ))) ?? [];
     return r?.value ?? null;
   };
-  const [ddStored, recentHigh] = await Promise.all([trailOf("dd_from_high"), trailOf("recent_high_40")]);
+  // The sell plan's decision, published by etl.compute under the state sentinel row. It is
+  // personal, so it reaches the broadcast only when the ETL says so (plan.broadcast).
+  const planOf = async () => {
+    const [r] = (await soft("plan_today", () => jget(
+      `${env.SUPABASE_URL}/rest/v1/macro_daily?select=source&series=eq.app_state:plan_today&trade_date=eq.2000-01-01`,
+      { headers: H },
+    ))) ?? [];
+    try { return r?.source ? JSON.parse(r.source) : null; } catch (e) { return null; }
+  };
+  const [ddStored, recentHigh, brakeDd, plan] = await Promise.all([
+    trailOf("dd_from_high"), trailOf("recent_high_40"), trailOf("brake_dd"), planOf(),
+  ]);
 
   let xau = null, fx = null;
   try { xau = (await jget("https://api.gold-api.com/price/XAU")).price; } catch (e) {}
@@ -158,10 +178,18 @@ async function buildMessage(env) {
   const lines = ["🔔 ราคาทองวันนี้"];
   if (xau && fx) lines.push(`สากล real-time: $${nf.format(Math.round(xau))}/oz ≈ ${nf.format(Math.round(xau * fx * CONV))} บาท/บาททอง`);
   if (px?.bar_buy_close != null) lines.push(`ราคาสมาคมฯ (ขายได้จริง): ${nf.format(Math.round(px.bar_buy_close))} บาท/บาททอง`);
-  if (sig?.sell_pressure != null) lines.push(`คะแนนสัญญาณ ${Math.round(sig.sell_pressure)}/100 — ${VERDICT_TH[sig.verdict] || sig.verdict}`);
+  if (sig?.sell_pressure != null) lines.push(`คะแนนจังหวะขาย ${Math.round(sig.sell_pressure)}/100 — ${VERDICT_TH[sig.verdict] || sig.verdict}`);
   if (trail) {
     const asOf = trail.live ? "" : " · ณ ราคาปิด";
-    lines.push(`ต่ำกว่ายอด 40 วัน ${(trail.dd * 100).toFixed(1)}% (ยอด ${nf.format(Math.round(trail.high))})${asOf}`);
+    const band = brakeDd == null ? "" : ` · เบรกที่ ${(brakeDd * 100).toFixed(1)}%`;
+    lines.push(`ต่ำกว่ายอด 40 วัน ${(trail.dd * 100).toFixed(1)}% (ยอด ${nf.format(Math.round(trail.high))})${band}${asOf}`);
+  }
+  if (plan?.broadcast && plan.action) {
+    const step = plan.action === "done" || plan.action === "ended"
+      ? ACTION_TH[plan.action]
+      : `ไม้ ${plan.tranche}/${plan.n_tranches} · ครบกำหนด ${thDate(plan.due_date)} · รอบนี้: ${
+          plan.action === "sell" && plan.count > 1 ? `ขาย ${plan.count} ไม้ (ใกล้เส้นตาย)` : ACTION_TH[plan.action] ?? plan.action}`;
+    lines.push(`แผนขาย: ${step}`);
   }
   if (sig?.trade_date) lines.push(`ข้อมูล ณ ${sig.trade_date}`);
   // Everything above the link is optional now (see soft()), so count what actually made it.
