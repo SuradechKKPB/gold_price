@@ -18,13 +18,21 @@ class Settings(BaseSettings):
     dashboard_url: str = "https://gold-price-gamma.vercel.app"
 
     # Holding config — drives the headline THB figure and the backtest unit.
-    gold_grams: float = 900.0
+    gold_grams: float = 1000.0
     gold_type: str = "bar"          # bar = 96.5% ทองคำแท่ง
     bar_spread_thb: float = 200.0   # modeled buy-in = sell - spread when live bid unknown
 
-    # Sell-campaign config (etl/advice.py). All optional — empty/0 disables that overlay.
-    sell_window_start: str = ""     # ISO date the 3-12m exit window opened; enables deadline decay
-    sell_window_months: int = 12    # window length; the sell bar decays to ~trim by expiry
+    # Sell plan (etl/plan.py): PACE is the seller's call, the score only picks the days.
+    # Empty start/deadline or 0 grams switches the plan off.
+    plan_start: str = "2026-10-02"
+    plan_deadline: str = "2026-12-30"   # 31 Dec is a Thai holiday: the last session must be before it
+    plan_sell_grams: float = 500.0  # at least half of the holding by the deadline
+    plan_tranches: int = 5
+    # The LINE OA broadcasts to every follower, so plan progress (personal) stays off it
+    # unless switched on; the market zone is broadcast either way.
+    plan_in_broadcast: bool = False
+
+    # Personal overlay (etl/advice.py). All optional — 0 disables that line.
     target_thb: float = 0.0         # total proceeds goal for the whole holding (0 = unset)
     cost_basis_thb_per_baht: float = 0.0  # avg buy price per baht-weight (0 = unset), for P/L framing
 

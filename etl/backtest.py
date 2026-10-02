@@ -1,382 +1,304 @@
-"""Backtest harness for the 'sell what you hold' problem.
+"""Backtest harness: what a seller actually gets, with drift kept apart from skill.
 
-One buy already happened; the decision is WHEN, inside a 3-12 month window, to
-convert held gold to THB. Metrics are cash-oriented (realized THB, % of the
-window range captured, regret vs the window high) — not Sharpe. The candidate
-rules are pitted against the benchmarks that matter, above all DCA-OUT.
+The pre-v4 harness compared a laddered score against DCA-out and called the gap an edge.
+The 2026-10-02 audit showed most of that gap was TIMING, not skill. The ladder rarely fired
+in a bull market, so it held to the window end and collected the trend (corr 0.65 with
+"sell everything at the end"). In the 2011-18 bear the same habit lost. This harness asks
+two questions separately, and every number it prints says which one it answers:
 
-Post-audit rigor (why the old headline numbers were overstated):
-  - EXECUTION LAG: every rule executes at the NEXT Thai trading day's price, not
-    the same close the signal is built from (the intl score's basis, the LBMA PM
-    fix, publishes hours after the association close — same-day fills were a
-    look-ahead that flattered trailing/score rules on falling tape).
-  - CLEAN SELECTION: the best threshold / trail knob is chosen ONLY on pre-2020
-    windows, then the >=2020 holdout is reported for that pre-chosen config — so
-    the holdout no longer validates the parameter it helped pick.
-  - HONEST UNCERTAINTY: windows overlap ~99% (STEP=3), so point medians are
-    near-duplicate; we attach a SEEDED circular block-bootstrap CI (block>=horizon)
-    to win-rate-vs-DCA and capture, and report each score rule's TRIGGER RATE so a
-    'good' number that is really just 'held to window end' is visible.
-  - EFFECTIVE SAMPLE SIZE: every interval is printed next to n_eff — the count of
-    NON-overlapping windows the history holds (~19 at a 12-month horizon). This is
-    the binding constraint on what this harness can prove, and it is small enough
-    that the ladder's edge over DCA-out does not separate from chance. Read the
-    output as 'no measurable edge either way', not as a ranking.
-  - REAL POLICY: we backtest the DEPLOYED ladder (trim@T1 / tranche@T2 / sell@T3
-    with the n_trend>=2 gate, laddered fractions), not only sell-all-at-one-T.
+  1. DAY SKILL, drift-neutral. On the days a rule actually sells, how does the T+1 fill
+     compare with the centred ±63-day average price around it? A centred window cancels
+     the trend, so a positive number means the rule sold above the prices around it.
+     Nothing else in this file can tell skill from luck in a trending market.
+  2. CAMPAIGN. The deployed plan (etl.plan.decide, the same function the live plan runs)
+     is replayed over rolling campaigns shaped like the live one. It is compared with two
+     benchmarks that sell the same tranches in the same slots: at the slot END (the plan
+     with no signal) and at the slot MIDDLE (≈ a random day in the slot, i.e. no skill).
+     The average sale day is printed beside every edge. A rule that "wins" only by selling
+     later in a bull market shows up as a later sale day, not as skill.
 
-The score BASIS is international THB; the realized price is the association bid
-(bar_buy_close) — that is what Poom actually sells into.
+Every figure is split by regime (2006-11 bull, 2011-18 bear, 2019-26 bull). A rule passes
+only if its day skill is positive in all three, and if it beats the random-day benchmark in
+all three. Parameters are chosen on campaigns that START before 2020 and reported on the
+rest. Signal basis = international THB close. Realized price = association bid (what Poom
+sells into); its deep history is modelled as sell minus 200, so absolute THB are approximate.
 """
 
 from __future__ import annotations
 
+import argparse
+import itertools
 import uuid
 
 import numpy as np
 import pandas as pd
 
-from . import signals
+from . import indicators, intl, plan, signals
 from .config import settings
 
-HORIZONS = {"3m": 63, "6m": 126, "9m": 189, "12m": 252}
-TRAIL_X = [0.03, 0.05, 0.08, 0.10]
-SCORE_T = [35, 40, 45, 50, 55, 60]
-# Joint (trim, tranche, sell) grids for the deployed ladder policy, incl. the shipped one.
-LADDER_GRID = [
-    (signals.T_TRIM, signals.T_TRANCHE, signals.T_SELL),
-    (38, 46, 54), (40, 48, 56), (42, 50, 58), (44, 52, 60), (46, 54, 62),
-]
-LADDER_W = (0.34, 0.33)          # trim sells 34%, tranche 33%, sell dumps the remaining 33%
-STEP = 3                              # sample window starts every N trading days
-OOS_START = pd.Timestamp("2020-01-01")  # out-of-sample holdout boundary
-BOOT_N = 400                         # block-bootstrap resamples
-BOOT_SEED = 0                        # fixed seed: reproducible AND actually random
+REGIMES = (
+    ("2006-11 bull", "2006-01-01", "2011-08-31"),
+    ("2011-18 bear", "2011-09-01", "2018-12-31"),
+    ("2019-26 bull", "2019-01-01", "2100-01-01"),
+)
+SELECT_END = pd.Timestamp("2020-01-01")   # selection sees campaigns starting before this only
+NBHD = 63                                  # half-width of the centred window for day skill
+CAMPAIGNS = {"3m": 63, "6m": 126, "12m": 252}
+STEP = 5                                   # a campaign starts every N trading days
+GRID = {
+    "rank_window": (None, 756),            # percentile over all history vs the last ~3 years
+    "trigger": ("rich", "very_rich"),
+    "brake_k": (1.0, 1.5),
+    "grace": (5, 10),
+}
 _NS = uuid.UUID("00000000-0000-0000-0000-00000000ba5e")
 
 
-# ----- strategies: each returns the realized (avg) sell price for one window seg -----
-# `nxt` executes a trigger at the NEXT day's price (index+1), else the last day.
+# ----- data ----------------------------------------------------------------------------
 
-def _nxt(seg: np.ndarray, i: int) -> float:
-    return float(seg[i + 1]) if i + 1 < len(seg) else float(seg[-1])
+def load_frame(sb) -> tuple[pd.DataFrame, pd.Series]:
+    """Indicators on the score basis, plus the realized price on the same trading days."""
+    from .load import fetch_all
 
-
-def s_random(seg: np.ndarray) -> float:
-    return float(seg.mean())
-
-
-def s_end(seg: np.ndarray) -> float:
-    return float(seg[-1])
+    ind = indicators.build(intl.load_intl_daily(sb), 0.0)
+    gta = pd.DataFrame(fetch_all(sb, "gold_price_daily", "trade_date,bar_buy_close", "trade_date"))
+    bid = pd.Series(gta["bar_buy_close"].astype(float).values, index=pd.to_datetime(gta["trade_date"]))
+    realized = bid.reindex(ind.index, method="ffill", limit=3).fillna(ind["close"])
+    return ind, realized
 
 
-def s_dca(seg: np.ndarray, n: int = 6) -> float:
-    idx = np.linspace(0, len(seg) - 1, n).round().astype(int)
-    return float(seg[idx].mean())
+# ----- the two measurements --------------------------------------------------------------
+
+def centred_mean(price: np.ndarray, k: int = NBHD) -> np.ndarray:
+    return pd.Series(price).rolling(2 * k + 1, center=True).mean().to_numpy()
 
 
-def s_trail_aao(seg: np.ndarray, x: float) -> float:
-    peak = seg[0]
-    for i, v in enumerate(seg):
-        peak = max(peak, v)
-        if v <= peak * (1 - x):
-            return _nxt(seg, i)
-    return float(seg[-1])
+def day_skill(price: np.ndarray, fills: np.ndarray, nb: np.ndarray) -> float:
+    """Mean of fill price / centred average around the fill day, minus 1. NaN-safe."""
+    if not len(fills):
+        return float("nan")
+    r = price[fills] / nb[fills] - 1.0
+    return float(np.nanmean(r)) if np.isfinite(r).any() else float("nan")
 
 
-def s_trail_ladder(seg: np.ndarray, x: float, n: int = 4) -> float:
-    """DCA-out floor of n tranches; a trailing-stop trigger ACCELERATES the next tranche."""
-    sched = np.linspace(0, len(seg) - 1, n).round().astype(int)
-    sold: list[float] = []
-    peak = seg[0]
-    nxt = 0
-    for t, v in enumerate(seg):
-        peak = max(peak, v)
-        if nxt < n:
-            if v <= peak * (1 - x):
-                sold.append(_nxt(seg, t)); nxt += 1; peak = v
-            elif t >= sched[nxt]:
-                sold.append(_nxt(seg, t)); nxt += 1
-    while nxt < n:
-        sold.append(seg[-1]); nxt += 1
-    return float(np.mean(sold))
+def run_campaigns(price: np.ndarray, verdict: np.ndarray, L: int, rules: plan.Rules, starts) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
+    """Replay plan.decide over each campaign. Returns avg fill price, avg fill day, fills."""
+    avg, day, fills = [], [], []
+    for a in starts:
+        sold, last, f = 0, None, []
+        for t in range(L - 1):
+            d = plan.decide(t, L, sold, last, verdict[a + t], rules)
+            if d.action == "sell":
+                f.extend([a + t + 1] * d.count)   # count > 1 only when behind; a replay never is
+                sold += d.count
+                last = t
+        f = np.array(f, dtype=int)
+        avg.append(price[f].mean())
+        day.append((f - a).mean())
+        fills.append(f)
+    return np.array(avg), np.array(day), fills
 
 
-def s_score(seg: np.ndarray, score_seg: np.ndarray, t: float) -> float:
-    hits = np.where(~np.isnan(score_seg) & (score_seg >= t))[0]
-    return _nxt(seg, hits[0]) if len(hits) else float(seg[-1])
+def slot_mid(price: np.ndarray, L: int, n: int, starts) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
+    """Each tranche at the middle of its slot: what a seller with no skill gets on average."""
+    ends = (-1,) + plan.slot_ends(L, n)
+    mids = np.array([(ends[k] + 1 + ends[k + 1]) // 2 + 1 for k in range(n)])
+    fills = [a + mids for a in starts]
+    return np.array([price[f].mean() for f in fills]), np.full(len(starts), mids.mean()), fills
 
 
-def s_ladder(seg: np.ndarray, score_seg: np.ndarray, ntrend_seg: np.ndarray, T, w=LADDER_W) -> float:
-    """The DEPLOYED verdict machine as an execution policy: fraction w[0] at the first
-    trim crossing, w[1] at the first tranche crossing, the remainder at the first gated
-    sell; anything unsold is dumped at the window end. Each tranche fills at T+1."""
-    n = len(seg)
-    held, proceeds = 1.0, 0.0
-    fired_trim = fired_tr = fired_sell = False
-    for i in range(n):
-        s = score_seg[i]
-        if np.isnan(s):
-            continue
-        if not fired_trim and s >= T[0]:
-            proceeds += w[0] * _nxt(seg, i); held -= w[0]; fired_trim = True
-        if not fired_tr and s >= T[1]:
-            proceeds += w[1] * _nxt(seg, i); held -= w[1]; fired_tr = True
-        if not fired_sell and s >= T[2] and ntrend_seg[i] >= 2:
-            proceeds += held * _nxt(seg, i); held = 0.0; fired_sell = True
-        if held <= 1e-9:
-            break
-    if held > 1e-9:
-        proceeds += held * float(seg[-1])
-    return proceeds
+def sell_all_at_end(price: np.ndarray, L: int, starts):
+    fills = [np.array([a + L - 1]) for a in starts]
+    return np.array([price[f].mean() for f in fills]), np.full(len(starts), L - 1.0), fills
 
 
-def _score_triggers(score_seg: np.ndarray, t: float) -> bool:
-    return bool(np.any(~np.isnan(score_seg) & (score_seg >= t)))
+# ----- evaluation ------------------------------------------------------------------------
+
+def _regime_masks(dates: pd.DatetimeIndex) -> dict[str, np.ndarray]:
+    m = {name: (dates >= a) & (dates <= b) for name, a, b in REGIMES}
+    m["pre-2020"] = dates < SELECT_END
+    m["2020+"] = dates >= SELECT_END
+    m["all"] = np.ones(len(dates), bool)
+    return m
 
 
-# ----- data -----
-
-def _fetch_all(sb, table: str, cols: str, order: str) -> list[dict]:
-    rows, page = [], 0
-    while True:
-        res = sb.table(table).select(cols).order(order).range(page * 1000, page * 1000 + 999).execute()
-        rows.extend(res.data)
-        if len(res.data) < 1000:
-            return rows
-        page += 1
-
-
-def load_series(sb) -> pd.DataFrame:
-    price = pd.DataFrame(_fetch_all(sb, "gold_price_daily", "trade_date,bar_buy_close", "trade_date"))
-    score = pd.DataFrame(_fetch_all(sb, "signals_daily", "trade_date,sell_pressure,active_signals", "trade_date"))
-    # reconstruct n_trend from the stored flags (no dedicated column): a fresh trailing
-    # break + a confirmed secular bear are the two gate inputs.
-    def ntrend(sig) -> int:
-        a = sig or []
-        return int("trailing_stop_fired" in a) + int("secular_confirm" in a)
-    score["n_trend"] = score["active_signals"].map(ntrend)
-    df = price.merge(score[["trade_date", "sell_pressure", "n_trend"]], on="trade_date", how="left")
-    df["trade_date"] = pd.to_datetime(df["trade_date"])
-    df = df.set_index("trade_date").astype({"bar_buy_close": float, "sell_pressure": float})
-    df["n_trend"] = df["n_trend"].fillna(0).astype(int)
-    first = df["sell_pressure"].first_valid_index()
-    return df.loc[first:] if first is not None else df
+def summarize(price, nb, avg, day, fills, bench_avg, start_dates) -> dict:
+    """Per-regime edge vs the benchmark, average sale day and day skill of the fills."""
+    edge = avg / bench_avg - 1.0
+    out: dict = {}
+    for name, m in _regime_masks(start_dates).items():
+        f = np.concatenate([fills[i] for i in np.where(m)[0]]) if m.any() else np.array([], int)
+        out[name] = {
+            "edge_pct": round(float(edge[m].mean()) * 100, 3) if m.any() else None,
+            "win_pct": round(float((edge[m] > 0).mean()) * 100, 1) if m.any() else None,
+            "avg_day": round(float(day[m].mean()), 1) if m.any() else None,
+            "skill_pct": round(day_skill(price, f, nb) * 100, 3),
+            "n": int(m.sum()),
+        }
+    return out
 
 
-# ----- evaluation -----
-
-def _eval(price, score, ntrend, dates, length, realize) -> pd.DataFrame:
-    out = []
-    for i in range(0, len(price) - length + 1, STEP):
-        seg = price[i : i + length]
-        sc = score[i : i + length]
-        nt = ntrend[i : i + length]
-        wmin, wmax = seg.min(), seg.max()
-        rng = wmax - wmin
-        sell = realize(seg, sc, nt)
-        out.append(
-            {
-                "window_start": dates[i],
-                "sell_price": sell,
-                "window_min": wmin,
-                "window_max": wmax,
-                "capture_pct": (sell - wmin) / rng if rng else 1.0,
-                "regret_pct": (wmax - sell) / rng if rng else 0.0,
-                "regret_thb": wmax - sell,
-            }
-        )
-    return pd.DataFrame(out)
+def n_eff(n_campaigns: int, L: int) -> int:
+    """Independent (non-overlapping) campaigns behind a statistic: windows overlap heavily."""
+    return max(1, round(n_campaigns * STEP / L))
 
 
-def _is_oos(w: pd.DataFrame):
-    return w["window_start"] < OOS_START, w["window_start"] >= OOS_START
+def evaluate_config(ind, price, nb, cfg: dict, L: int) -> dict:
+    sc = signals.compute_scores(ind, rank_window=cfg["rank_window"], brake_k=cfg["brake_k"])
+    verdict = sc["verdict"].reindex(ind.index).fillna("neutral").to_numpy()
+    first = ind.index.get_loc(sc.index[0])
+    starts = list(range(first, len(price) - L, STEP))
+    rules = plan.Rules(n_tranches=settings.plan_tranches, trigger=cfg["trigger"], grace=cfg["grace"])
+    dates = ind.index[starts]
+    neutral = np.full(len(price), "neutral", dtype=object)
+
+    end_avg, end_day, end_f = run_campaigns(price, neutral, L, rules, starts)
+    res = {
+        "plan_signal": run_campaigns(price, verdict, L, rules, starts),
+        "plan_slot_end": (end_avg, end_day, end_f),
+        "plan_slot_mid": slot_mid(price, L, rules.n_tranches, starts),
+        "sell_all_at_end": sell_all_at_end(price, L, starts),
+    }
+    out = {k: summarize(price, nb, *v, end_avg, dates) for k, v in res.items()}
+    # Edge of the signal against the no-skill benchmark: the comparison that isolates day choice.
+    sig_avg, sig_day, sig_f = res["plan_signal"]
+    out["plan_signal_vs_mid"] = summarize(price, nb, sig_avg, sig_day, sig_f, res["plan_slot_mid"][0], dates)
+    out["_raw"] = {k: v for k, v in res.items()}
+    out["_window"] = {"starts": starts, "L": L}
+    return out
 
 
-def _block_boot(values: np.ndarray, horizon: int, stat=np.median) -> tuple[float, float, float]:
-    """Circular block bootstrap CI for a statistic over overlapping windows.
-
-    Block starts are drawn from a SEEDED RNG, not the old LCG stride. The stride produced
-    400 distinct resamples, but the blocks inside each replicate landed on a systematic
-    grid rather than independent draws, so the spread between replicates understated the
-    true sampling variability. Measured on synthetic series with a known mean, a nominal
-    95% interval covered the truth only 77% of the time; the seeded draw below covers
-    87.8%. Same reproducibility (fixed seed), honest width.
-
-    Read the interval alongside n_eff() — with ~99% window overlap the CI is dominated by
-    how few INDEPENDENT windows the history holds, not by the resampling scheme.
-    """
-    n = len(values)
-    if n < 5:
-        return float(stat(values)) if n else float("nan"), float("nan"), float("nan")
-    block = max(1, horizon // STEP)
-    nblocks = int(np.ceil(n / block))
-    rng = np.random.default_rng(BOOT_SEED)
-    starts = rng.integers(0, n, (BOOT_N, nblocks))
-    idx = (starts[:, :, None] + np.arange(block)) % n
-    ests = [float(stat(values[row])) for row in idx.reshape(BOOT_N, -1)[:, :n]]
-    lo, hi = np.percentile(ests, [2.5, 97.5])
-    return float(stat(values)), float(lo), float(hi)
+def passes(r: dict) -> tuple[bool, list[str]]:
+    """Acceptance: positive day skill AND a win over the random-day benchmark, every regime."""
+    why = []
+    for name, _, _ in REGIMES:
+        s = r["plan_signal"][name]["skill_pct"]
+        e = r["plan_signal_vs_mid"][name]["edge_pct"]
+        if not (s is not None and s > 0):
+            why.append(f"{name}: day skill {s}%")
+        if not (e is not None and e > 0):
+            why.append(f"{name}: edge vs random day {e}%")
+    return not why, why
 
 
-def n_eff(n_windows: int, horizon: int) -> int:
-    """Number of NON-overlapping (independent) windows behind a statistic.
-
-    _eval samples a window every STEP=3 trading days, so a 12-month horizon yields ~1,400
-    windows that share ~99% of their data. The information content is the number of
-    disjoint windows the history actually contains — 23 for a 12-month horizon. Every interval reported here should be read against this number, not the
-    window count: at n_eff=23 a win rate of 0.52 carries a bootstrap CI of
-    0.38-0.68, which does not separate from 0.50.
-    """
-    return max(1, round(n_windows * STEP / horizon))
-
-
-def _win_rate(w: pd.DataFrame, dca_sell: pd.Series) -> np.ndarray:
-    return (w["sell_price"].values > dca_sell.values).astype(float)
+def select(ind, price, nb) -> tuple[dict, list[tuple[dict, float]]]:
+    """Choose the grid point with the best mean pre-2020 edge vs the random-day benchmark
+    over the 3m and 6m campaigns (the live campaign is 3 months)."""
+    scored = []
+    keys = list(GRID)
+    for combo in itertools.product(*(GRID[k] for k in keys)):
+        cfg = dict(zip(keys, combo))
+        e = np.mean([evaluate_config(ind, price, nb, cfg, CAMPAIGNS[h])["plan_signal_vs_mid"]["pre-2020"]["edge_pct"] for h in ("3m", "6m")])
+        scored.append((cfg, float(e)))
+    scored.sort(key=lambda x: -x[1])
+    return scored[0][0], scored
 
 
-def run_backtest(sb) -> dict:
-    df = load_series(sb)
-    price = df["bar_buy_close"].values
-    score = df["sell_pressure"].values
-    ntrend = df["n_trend"].values
-    dates = df.index
+def deployed_config() -> dict:
+    return {
+        "rank_window": signals.RANK_WINDOW,
+        "trigger": plan.Rules().trigger,
+        "brake_k": signals.BRAKE_K,
+        "grace": plan.Rules().grace,
+    }
+
+
+# ----- storage for the dashboard ---------------------------------------------------------
+
+def _rows(ind, price, results: dict[str, dict], cfg: dict) -> list[dict]:
     bw = settings.baht_weight
-
-    runs: list[dict] = []
-    win_store: list[dict] = []
-    summary: dict = {}
-
-    for hname, L in HORIZONS.items():
-        w_dca = _eval(price, score, ntrend, dates, L, lambda s, sc, nt: s_dca(s))
-        dca_sell = w_dca["sell_price"]
-        configs: dict[str, pd.DataFrame] = {
-            "random_day": _eval(price, score, ntrend, dates, L, lambda s, sc, nt: s_random(s)),
-            "window_end": _eval(price, score, ntrend, dates, L, lambda s, sc, nt: s_end(s)),
-            "dca_out": w_dca,
-        }
-        for x in TRAIL_X:
-            configs[f"trail_aao_{int(x*100)}"] = _eval(price, score, ntrend, dates, L, lambda s, sc, nt, x=x: s_trail_aao(s, x))
-            configs[f"trail_ladder_{int(x*100)}"] = _eval(price, score, ntrend, dates, L, lambda s, sc, nt, x=x: s_trail_ladder(s, x))
-        for t in SCORE_T:
-            configs[f"score_ge_{t}"] = _eval(price, score, ntrend, dates, L, lambda s, sc, nt, t=t: s_score(s, sc, t))
-        for T in LADDER_GRID:
-            key = f"ladder_{T[0]}_{T[1]}_{T[2]}"
-            configs[key] = _eval(price, score, ntrend, dates, L, lambda s, sc, nt, T=T: s_ladder(s, sc, nt, T))
-
-        for name, w in configs.items():
-            is_mask, oos_mask = _is_oos(w)
-            wr = None if name == "dca_out" else _win_rate(w, dca_sell)
-            params: dict = {}
-            if "trail" in name:
-                params["x_pct"] = name.split("_")[-1]
-            elif name.startswith("score_ge"):
-                params["t"] = name.split("_")[-1]
-                params["trigger_rate"] = round(float(np.mean([
-                    _score_triggers(score[i:i+L], float(params["t"]))
-                    for i in range(0, len(price) - L + 1, STEP)])), 4)
-            elif name.startswith("ladder_"):
-                params["T"] = name.split("_", 1)[1]
-            params["is_capture"] = round(float(w.loc[is_mask, "capture_pct"].median()), 4) if is_mask.any() else None
-            params["oos_capture"] = round(float(w.loc[oos_mask, "capture_pct"].median()), 4) if oos_mask.any() else None
-            if wr is not None:
-                m, lo, hi = _block_boot(wr, L, np.mean)
-                params["win_vs_dca"] = round(m, 4)
-                params["win_vs_dca_ci"] = [round(lo, 4), round(hi, 4)]
-            rid = uuid.uuid5(_NS, f"{name}|{hname}")
-            runs.append(
+    rows = []
+    for h, r in results.items():
+        L = r["_window"]["L"]
+        starts = r["_window"]["starts"]
+        for strat in ("plan_signal", "plan_slot_end", "plan_slot_mid", "sell_all_at_end"):
+            avg, _, _ = r["_raw"][strat]
+            lo = np.array([price[a : a + L].min() for a in starts])
+            hi = np.array([price[a : a + L].max() for a in starts])
+            cap = np.where(hi > lo, (avg - lo) / np.where(hi > lo, hi - lo, 1), 1.0)
+            regret = hi - avg
+            end_avg = r["_raw"]["plan_slot_end"][0]
+            rows.append(
                 {
-                    "id": str(rid),
-                    "strategy": name,
-                    "params": params,
+                    "id": str(uuid.uuid5(_NS, f"v4|{strat}|{h}")),
+                    "strategy": strat,
+                    "params": {
+                        "by_regime": r[strat],
+                        "vs_random_day": r["plan_signal_vs_mid"] if strat == "plan_signal" else None,
+                        "config": {k: v for k, v in cfg.items()},
+                        "n_eff": n_eff(len(starts), L),
+                        "tranches": settings.plan_tranches,
+                        "score_version": signals.SCORE_VERSION,
+                    },
                     "horizon_days": L,
-                    "start_date": str(dates[0].date()),
-                    "end_date": str(dates[-1].date()),
-                    "median_thb": round(float(w["sell_price"].median()) * bw, 2),
-                    "median_capture_pct": round(float(w["capture_pct"].median()), 4),
-                    "median_regret_thb": round(float(w["regret_thb"].median()) * bw, 2),
-                    "p90_regret_thb": round(float(w["regret_thb"].quantile(0.90)) * bw, 2),
-                    "win_rate_vs_dca": round(float(np.mean(wr)), 4) if wr is not None else None,
+                    "start_date": str(ind.index[starts[0]].date()),
+                    "end_date": str(ind.index[-1].date()),
+                    "median_thb": round(float(np.median(avg)) * bw, 2),
+                    "median_capture_pct": round(float(np.median(cap)), 4),
+                    "median_regret_thb": round(float(np.median(regret)) * bw, 2),
+                    "p90_regret_thb": round(float(np.quantile(regret, 0.9)) * bw, 2),
+                    "win_rate_vs_dca": None if strat == "plan_slot_end" else round(float((avg > end_avg).mean()), 4),
                 }
             )
+    return rows
 
-        # --- CLEAN SELECTION: choose on pre-2020 capture only, report OOS for that choice ---
-        def is_cap(cfg: str) -> float:
-            m, _ = _is_oos(configs[cfg])
-            sub = configs[cfg].loc[m, "capture_pct"]
-            return float(sub.median()) if len(sub) else -1.0
 
-        best_t = max(SCORE_T, key=lambda t: is_cap(f"score_ge_{t}"))
-        best_lad = max(LADDER_GRID, key=lambda T: is_cap(f"ladder_{T[0]}_{T[1]}_{T[2]}"))
-        best_aao = max(TRAIL_X, key=lambda x: is_cap(f"trail_aao_{int(x*100)}"))
-        lad_key = f"ladder_{best_lad[0]}_{best_lad[1]}_{best_lad[2]}"
-        lad_w = configs[lad_key]
-        _, lad_oos = _is_oos(lad_w)
-        wr_lad = _win_rate(lad_w, dca_sell)
-        m_wr, lo_wr, hi_wr = _block_boot(wr_lad, L, np.mean)
+def write_runs(sb, rows: list[dict]) -> None:
+    """Replace backtest_runs wholesale: rows from a retired formula would otherwise sit
+    beside the current ones on the dashboard (backtest_windows cascades)."""
+    sb.table("backtest_runs").delete().gte("horizon_days", 0).execute()
+    sb.table("backtest_runs").insert(rows).execute()
 
-        summary[hname] = {
-            "n_windows": len(lad_w),
-            "n_eff": n_eff(len(lad_w), L),
-            "dca_thb": round(float(configs["dca_out"]["sell_price"].median()) * bw),
-            "best_score_t": best_t,
-            "score_is": is_cap(f"score_ge_{best_t}"),
-            "score_oos": configs[f"score_ge_{best_t}"].loc[_is_oos(configs[f'score_ge_{best_t}'])[1], "capture_pct"].median(),
-            "score_trigger": next(r["params"].get("trigger_rate") for r in runs if r["strategy"] == f"score_ge_{best_t}" and r["horizon_days"] == L),
-            "best_ladder": best_lad,
-            "ladder_is": is_cap(lad_key),
-            "ladder_oos": round(float(lad_w.loc[lad_oos, "capture_pct"].median()), 4),
-            "ladder_thb": round(float(lad_w["sell_price"].median()) * bw),
-            "ladder_win_vs_dca": round(m_wr, 3),
-            "ladder_win_ci": [round(lo_wr, 3), round(hi_wr, 3)],
-            "best_aao": best_aao,
-            "aao_is": is_cap(f"trail_aao_{int(best_aao*100)}"),
-        }
 
-        rid = uuid.uuid5(_NS, f"{lad_key}|{hname}")
-        for r in lad_w.itertuples(index=False):
-            win_store.append(
-                {
-                    "run_id": str(rid),
-                    "window_start": str(r.window_start.date()),
-                    "window_end": str((r.window_start + pd.Timedelta(days=1)).date()),
-                    "sell_date": None,
-                    "sell_price": round(r.sell_price, 2),
-                    "window_min": round(r.window_min, 2),
-                    "window_max": round(r.window_max, 2),
-                    "capture_pct": round(r.capture_pct, 4),
-                    "regret_thb": round(r.regret_thb, 2),
-                }
-            )
+# ----- CLI -------------------------------------------------------------------------------
 
-    for i in range(0, len(runs), 500):
-        sb.table("backtest_runs").upsert(runs[i : i + 500], on_conflict="id").execute()
-    for i in range(0, len(win_store), 1000):
-        sb.table("backtest_windows").upsert(win_store[i : i + 1000], on_conflict="run_id,window_start").execute()
+def _fmt(r: dict, key: str) -> str:
+    cells = [f"{r[name][key]:+.2f}" if r[name][key] is not None else "  n/a" for name, _, _ in REGIMES]
+    return " | ".join(f"{c:>8}" for c in cells)
 
-    summary["_counts"] = {"runs": len(runs), "windows": len(win_store)}
-    return summary
+
+def report(results: dict[str, dict]) -> None:
+    regimes = " | ".join(f"{n:>8}" for n, _, _ in (("06-11", 0, 0), ("11-18", 0, 0), ("19-26", 0, 0)))
+    for h, r in results.items():
+        L = r["_window"]["L"]
+        print(f"\n=== {h} campaigns ({L} trading days, {settings.plan_tranches} tranches) · n_eff ≈ {n_eff(len(r['_window']['starts']), L)}")
+        print(f"{'':28} {'edge vs slot-end %':>32}   {'day skill % (±63d)':>32}   avg day")
+        print(f"{'':28} {regimes}   {regimes}")
+        for strat in ("plan_signal", "plan_slot_mid", "plan_slot_end", "sell_all_at_end"):
+            print(f"{strat:28} {_fmt(r[strat], 'edge_pct')}   {_fmt(r[strat], 'skill_pct')}   {r[strat]['all']['avg_day']:>6}")
+        print(f"{'plan_signal vs random day':28} {_fmt(r['plan_signal_vs_mid'], 'edge_pct')}")
+        ok, why = passes(r)
+        print("ACCEPT: " + ("PASS" if ok else "FAIL — " + "; ".join(why)))
 
 
 def main() -> None:
     from . import load
 
+    ap = argparse.ArgumentParser(prog="python -m etl.backtest")
+    ap.add_argument("--select", action="store_true", help="re-run the pre-2020 grid search")
+    ap.add_argument("--write", action="store_true", help="replace backtest_runs with these results (prod write)")
+    args = ap.parse_args()
+
     sb = load.client()
-    s = run_backtest(sb)
-    bw = settings.baht_weight
-    print(f"Backtest holding = {settings.gold_grams:g} g ({bw:.2f} baht-weight). Realized @ association bid, T+1 fills.\n")
-    print(f"{'horizon':>7} | {'n_eff':>5} | {'DCA THB':>10} | {'best ladder (T)  cap IS/OOS  win-vs-DCA[CI]':>52} | {'best score_ge_T  cap IS/OOS (trig)':>36}")
-    print("-" * 126)
-    for h in HORIZONS:
-        d = s[h]
-        lad = d["best_ladder"]
-        lad_s = f"({lad[0]}/{lad[1]}/{lad[2]}) {d['ladder_is']*100:.0f}%/{d['ladder_oos']*100:.0f}%  {d['ladder_win_vs_dca']*100:.0f}%[{d['ladder_win_ci'][0]*100:.0f}-{d['ladder_win_ci'][1]*100:.0f}]"
-        sc_oos = f"{d['score_oos']*100:.0f}%" if pd.notna(d['score_oos']) else "n/a"
-        sc_s = f"T={d['best_score_t']} {d['score_is']*100:.0f}%/{sc_oos} (trig {d['score_trigger']*100:.0f}%)"
-        print(f"{h:>7} | {d['n_eff']:>5} | {d['dca_thb']:>10,} | {lad_s:>52} | {sc_s:>36}")
-    print(f"\nWrote {s['_counts']['runs']} runs, {s['_counts']['windows']} windows. Selection on pre-{OOS_START.year} capture; OOS = starts >= {OOS_START.year}.")
-    print("n_eff = INDEPENDENT (non-overlapping) windows. Every win-vs-DCA CI above spans 50%,\n"
-          "so this harness cannot establish an edge over DCA-out in either direction.")
+    ind, realized = load_frame(sb)
+    price = realized.to_numpy(dtype=float)
+    nb = centred_mean(price)
+
+    cfg = deployed_config()
+    if args.select:
+        best, scored = select(ind, price, nb)
+        print("Grid (pre-2020 mean edge vs random day, 3m+6m):")
+        for c, e in scored:
+            print(f"  {e:+.3f}%  {c}{'   <- best' if c == best else ''}{'   <- deployed' if c == cfg else ''}")
+        if best != cfg:
+            print(f"\nNOTE: the deployed config differs from the pre-2020 best {best}. Update signals.py / plan.Rules and bump SCORE_VERSION.")
+
+    results = {h: evaluate_config(ind, price, nb, cfg, L) for h, L in CAMPAIGNS.items()}
+    print(f"\nDeployed config: {cfg} · holding {settings.gold_grams:g} g · realized = association bid, T+1 fills")
+    report(results)
+    if args.write:
+        write_runs(sb, _rows(ind, price, results, cfg))
+        print(f"\nWrote {len(results) * 4} rows to backtest_runs.")
 
 
 if __name__ == "__main__":

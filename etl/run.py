@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from . import indicators, intl, signals, state
+from . import compute, intl
 from .config import settings
 from .gta import GoldTick, fetch_latest, fetch_ohlc, ohlc_to_daily
 
@@ -58,7 +58,7 @@ def main() -> None:
         print(f"[dry] tick={'ok' if tick else 'none'} ohlc={'ok' if daily is not None else 'none'} — no Supabase env, nothing written.")
         return
 
-    from . import alerts, load
+    from . import load
 
     sb = load.client()
     if daily is None:
@@ -77,33 +77,18 @@ def main() -> None:
     daily = _merge_today(daily, tick)
 
     # --- score basis = international (world gold in THB), not the association quote ---
-    # Fill recent intl days from phone spot/fx FIRST, then overwrite today with the fresh
-    # live GTA tick — otherwise topup's (possibly older) phone snapshot would clobber the
-    # tick we just fetched for the same date.
+    # Fill recent intl days from stored spot/fx FIRST, then overwrite today with the fresh
+    # live GTA tick — otherwise topup's (possibly older) snapshot would clobber the tick we
+    # just fetched for the same date.
     intl.topup_from_daily(sb)
     if tick.gold_spot_usd and tick.baht_per_usd:
         intl.upsert_today(sb, today, tick.gold_spot_usd, tick.baht_per_usd)
-    daily_intl = intl.load_intl_daily(sb)
-    ind = indicators.build(daily_intl, 0.0)
-    dxy = load.fetch_macro(sb, "dxy")
-    scores = signals.compute_scores(ind, dxy)
-    latest = scores.iloc[-1]
 
     load.upsert_tick(sb, tick)
     n_daily = load.upsert_daily(sb, daily.tail(7), settings.bar_spread_thb)
-    # AUTO-HEAL on a formula change, same rule as compute.py (single-epoch signals_daily).
-    full = state.get_score_version(sb) != signals.SCORE_VERSION
-    n_sig = signals.upsert_signals(sb, scores if full else scores.tail(30))
-    if full:
-        state.set_score_version(sb, signals.SCORE_VERSION)
-    from . import advice
-    advice.topup_premium(sb)
-    extra = advice.advice_line(advice.build_advice(sb))
-    alert_status = alerts.alert_on_transition(sb, scores, buy_in=tick.bar_buy, extra=extra)
-
-    print(f"OK: buy-in {tick.bar_buy:,.0f}; sell-pressure {latest['sell_pressure']:.0f}/100 -> {latest['verdict']}")
-    print(f"Upserted 1 tick, {n_daily} daily, {n_sig} signal rows ({'FULL' if full else 'tail-30'}). "
-          f"{alerts.status_line(alert_status)}")
+    print(f"OK: buy-in {tick.bar_buy:,.0f}; upserted 1 tick, {n_daily} daily rows.")
+    # Same scoring, plan and alert path as the cron, so a hand-run cannot diverge from it.
+    compute.score_and_publish(sb, buy_in=tick.bar_buy)
 
 
 if __name__ == "__main__":

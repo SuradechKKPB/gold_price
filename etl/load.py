@@ -19,6 +19,18 @@ def client() -> Client:
     return create_client(settings.supabase_url, settings.supabase_service_role_key)
 
 
+def fetch_all(sb: Client, table: str, cols: str, order: str) -> list[dict]:
+    """Every row of a table, paged past PostgREST's 1000-row cap."""
+    rows: list[dict] = []
+    page = 0
+    while True:
+        res = sb.table(table).select(cols).order(order).range(page * 1000, page * 1000 + 999).execute()
+        rows.extend(res.data)
+        if len(res.data) < 1000:
+            return rows
+        page += 1
+
+
 def fetch_daily(sb: Client) -> pd.DataFrame:
     """Load the full daily bar-sell history from Supabase (source of truth)."""
     rows: list[dict] = []
