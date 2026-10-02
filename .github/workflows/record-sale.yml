@@ -1,0 +1,56 @@
+name: record-sale
+
+# Record a sale in the sell plan's ledger (etl/plan.py, state key plan_sales) from anywhere
+# GitHub opens, including the phone app: Actions -> record-sale -> Run workflow. The plan's
+# next decision is republished immediately, so the dashboard reflects the sale without
+# waiting for the next compute run.
+#
+# Inputs reach the script through env, never interpolated into `run:`. That is what
+# GitHub's hardening guide asks for, so a typed value cannot turn into shell.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "sold = add a sale · undo = remove the last one"
+        type: choice
+        options: [sold, undo]
+        default: sold
+      grams:
+        description: "Grams sold (e.g. 100)"
+        required: false
+      price:
+        description: "Association bid you sold at, THB per baht-weight (e.g. 71650)"
+        required: false
+      date:
+        description: "Sale date YYYY-MM-DD (blank = today, Bangkok)"
+        required: false
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Update the ledger
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ACTION: ${{ inputs.action }}
+          GRAMS: ${{ inputs.grams }}
+          PRICE: ${{ inputs.price }}
+          SALE_DATE: ${{ inputs.date }}
+        run: |
+          if [ "$ACTION" = "undo" ]; then
+            uv run python -m etl.plan undo
+          else
+            uv run python -m etl.plan sold "$GRAMS" --price "$PRICE" ${SALE_DATE:+--date "$SALE_DATE"}
+          fi

@@ -1,13 +1,10 @@
-"""Personal decision overlay — turns the market SCORE into Poom-specific ADVICE.
+"""Personal execution notes beside the market score: local premium and P/L framing.
 
-signals_daily is a pure market property (the verdict of the world-gold trend). This
-module layers on the things that are about *Poom's* exit, which must NOT contaminate
-that history:
+signals_daily is a pure market property. This module adds two things about *Poom's* sale
+that must NOT contaminate that history. (Pace and deadline used to live here as a "deadline
+decay" of the old 44/52/60 cut-offs. They now belong to etl/plan.py, which owns the
+campaign outright.)
 
-  - DEADLINE DECAY: an exit window has a hard end. Optimal stopping says the bar to
-    sell should fall as the window ages (the option value of waiting shrinks). We decay
-    the verdict cut-offs by elapsed fraction, so late in the window a middling score
-    already reads as 'act'. Off unless SELL_WINDOW_START is set.
   - LOCAL PREMIUM: Poom realizes the association bid, not world parity. The bid-vs-parity
     spread is a real, mean-reverting edge — selling into a rich local premium adds THB the
     score (built on world price) is blind to. Surfaced as a z-score execution note.
@@ -20,17 +17,12 @@ score history.
 
 from __future__ import annotations
 
-import datetime as dt
-
 import pandas as pd
 
-from . import signals
 from .config import settings
 from .load import fetch_daily, fetch_macro
 
-DECAY_MAX = 14.0          # composite points the cut-offs drop by, linearly, over the window
 PREM_WINDOW = 250         # trading days for the premium z-score baseline
-_TIER_NAME = signals._TIER_NAME
 
 
 def premium_series(sb) -> pd.Series:
@@ -67,33 +59,11 @@ def topup_premium(sb, days: int = 90) -> int:
     return len(rows)
 
 
-def _elapsed_fraction(today: dt.date) -> float | None:
-    if not settings.sell_window_start:
-        return None
-    try:
-        start = dt.date.fromisoformat(settings.sell_window_start)
-    except ValueError:
-        return None
-    total = max(1.0, settings.sell_window_months * 30.44)
-    return max(0.0, min(1.0, (today - start).days / total))
-
-
-def _tier(composite: float, n_trend: int, thr) -> int:
-    t = 0
-    if composite >= thr[0]:
-        t = 1
-    if composite >= thr[1]:
-        t = 2
-    if composite >= thr[2] and n_trend >= 2:
-        t = 3
-    return t
-
-
 def build_advice(sb) -> dict:
     """Combine the latest market verdict with Poom's campaign context into one dict."""
     sig = (
         sb.table("signals_daily")
-        .select("trade_date,sell_pressure,verdict,active_signals")
+        .select("trade_date,sell_pressure,verdict")
         .order("trade_date", desc=True)
         .limit(1)
         .execute()
@@ -104,26 +74,8 @@ def build_advice(sb) -> dict:
     row = sig[0]
     score = float(row["sell_pressure"])
     verdict = row["verdict"]
-    active = row.get("active_signals") or []
-    n_trend = int("trailing_stop_fired" in active) + int("secular_confirm" in active)
-    today = dt.date.fromisoformat(row["trade_date"])
 
-    out: dict = {"ok": True, "date": row["trade_date"], "score": score, "verdict": verdict, "n_trend": n_trend}
-
-    # --- deadline decay ---
-    f = _elapsed_fraction(today)
-    if f is not None:
-        base = [signals.T_TRIM, signals.T_TRANCHE, signals.T_SELL]
-        eff = [b - DECAY_MAX * f for b in base]
-        eff_tier = _tier(score, n_trend, eff)
-        raw_tier = _tier(score, n_trend, base)
-        out["deadline"] = {
-            "elapsed_frac": round(f, 3),
-            "months_left": round(settings.sell_window_months * (1 - f), 1),
-            "eff_thresholds": [round(x, 1) for x in eff],
-            "eff_tier": _TIER_NAME[eff_tier],
-            "urgent": eff_tier > raw_tier,
-        }
+    out: dict = {"ok": True, "date": row["trade_date"], "score": score, "verdict": verdict}
 
     # --- local premium execution note ---
     z = premium_z(sb)
@@ -156,9 +108,6 @@ def advice_line(a: dict) -> str:
     if not a.get("ok"):
         return ""
     parts: list[str] = []
-    d = a.get("deadline")
-    if d and d.get("urgent"):
-        parts.append(f"⏳ เหลือ ~{d['months_left']:.0f} เดือน — เกณฑ์ขายลดลง, สัญญาณเทียบเท่า “{_TH.get(d['eff_tier'], d['eff_tier'])}”")
     p = a.get("premium")
     if p and p["state"] == "rich":
         parts.append(f"💰 พรีเมียมในประเทศสูง (z={p['z']}) — จังหวะขายได้ราคาดีกว่าปกติ")
@@ -169,9 +118,6 @@ def advice_line(a: dict) -> str:
         v = e["vs_target_pct"]
         parts.append(f"🎯 มูลค่ารวม {e['proceeds_thb']:,} บาท ({'เกินเป้า' if v>=0 else 'ต่ำกว่าเป้า'} {abs(v):.0f}%)")
     return "\n".join(parts)
-
-
-_TH = {"hold": "ถือไว้", "trim": "ลดพอร์ตเล็กน้อย", "sell_tranche": "ขายบางส่วน", "sell": "ขายออก"}
 
 
 def main() -> None:

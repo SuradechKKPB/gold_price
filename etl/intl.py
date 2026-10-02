@@ -333,12 +333,14 @@ def upsert_today(sb, trade_date, spot_usd: float, baht_per_usd: float) -> float:
 def load_intl_daily(sb) -> pd.DataFrame:
     """International THB as a daily OHLC frame (O=H=L=C=fix) for indicators.build(..., 0).
 
-    A single daily fix carries no intraday range, so daily H=L=C; weekly high/low come
-    from the weekly min/max of the daily fixes. That is all the score needs — it reads
-    only closes (and the valid-mask's weekly chandelier/donchian, which the weekly
-    min/max satisfy). Pass spread=0: there is no association bid/ask on the world price.
+    A single daily fix carries no intraday range, so daily H=L=C. That is all the score
+    needs: it reads only closes. Pass spread=0: there is no association bid/ask on the
+    world price.
     """
     s = fetch_macro(sb, SERIES)
+    # Weekend bars are a repeat of Friday's close (four survive from before _market_day).
+    # Every rolling window the score reads counts bars, so a repeat would stretch it.
+    s = s[s.index.dayofweek < 5]
     df = pd.DataFrame({"trade_date": [d.date() for d in s.index]})
     for col in ("bar_sell_open", "bar_sell_high", "bar_sell_low", "bar_sell_close"):
         df[col] = s.values

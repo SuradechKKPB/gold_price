@@ -1,8 +1,14 @@
 """Tiny key/value state store for the ETL, layered over macro_daily.
 
-We need a little durable state — the last verdict we alerted on (so the cron
-alerts once per transition, not every 6h) and the score-formula version last
-written to signals_daily (so a formula change auto-heals the whole history).
+We need a little durable state: what the alerts last announced (so the cron alerts
+once per event, not every few hours), the score-formula version last written to
+signals_daily (so a formula change auto-heals the whole history), the sell plan's
+ledger of sales and its published decision for the day.
+
+Keys in use: market_alert, plan_alert (etl/alerts.py) · plan_sales, plan_today
+(etl/plan.py) · score_version. `last_alert` is the retired v3 transition key; nothing
+reads it any more.
+
 The gold Supabase is reachable only through PostgREST (service-role key), and
 this environment has no DB password / CLI to run DDL, so a dedicated table is
 not creatable from here. macro_daily already exists, is writable, and its
@@ -52,19 +58,6 @@ def set_state(sb: Client, key: str, value: float | None = None, text: str | None
 
 
 # --- typed helpers -----------------------------------------------------------
-
-def get_alert_state(sb: Client) -> tuple[str | None, str | None]:
-    """(last_alerted_verdict, last_alert_date_iso) or (None, None)."""
-    s = get_state(sb, "last_alert")
-    if not s or not s.get("text"):
-        return None, None
-    verdict, _, date_iso = str(s["text"]).partition("|")
-    return verdict or None, date_iso or None
-
-
-def set_alert_state(sb: Client, verdict: str, date_iso: str, level: float) -> None:
-    set_state(sb, "last_alert", value=level, text=f"{verdict}|{date_iso}")
-
 
 def get_score_version(sb: Client) -> int | None:
     s = get_state(sb, "score_version")
