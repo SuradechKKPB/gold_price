@@ -9,11 +9,6 @@ const VERDICT: Record<Verdict, { label: string; color: string }> = {
   neutral: { label: "ปกติ", color: "var(--muted)" },
   rich: { label: "โซนแพง", color: "var(--amber)" },
   very_rich: { label: "โซนแพงมาก · จังหวะขาย", color: "var(--orange)" },
-  // v3 names: only seen before the ETL's first v4 run rewrites signals_daily.
-  hold: { label: "ถือไว้", color: "var(--green)" },
-  trim: { label: "ลดพอร์ตเล็กน้อย", color: "var(--amber)" },
-  sell_tranche: { label: "ขายบางส่วน", color: "var(--orange)" },
-  sell: { label: "ขายออก", color: "var(--red)" },
 };
 
 export function VerdictChip({ verdict }: { verdict: Verdict }) {

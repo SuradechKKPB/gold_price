@@ -388,16 +388,11 @@ on **:3000**.
   the dashboard and Worker read it. The two gauge ticks (`RICH_LINE` / `VERY_RICH_LINE` in
   `web/components/ui.tsx`) still mirror `signals.RICH/VERY_RICH`. They are display-only (the
   verdict and its colour come from the DB), but they go stale if those constants move.
-- **v4 deploy order: web, then Worker, then merge to main.** Merging is what deploys the
-  ETL: the cron runs whatever is on main and rewrites `signals_daily` on its first v4 run.
-  The v3 dashboard still on Vercel calls `fa_score.toFixed()` and `seasonality.toFixed()`,
-  which v4 writes as NULL, so ETL-first is a 500 on every page load until
-  `vercel deploy --prod`. The v3 Worker survives (it prints the raw verdict name). The new
-  web and Worker accept v3 rows, so deploying them first is safe.
-- **v3 fallbacks to delete after the first v4 run**: the v3 verdict names in `VERDICT_TH`
-  (worker/src/index.js) and `VERDICT` (web/components/ui.tsx), and the v3 names in the
-  `Verdict` type. They exist only so the new Worker and web render the v3 rows still in the
-  DB during the hours before the ETL is merged.
+- **Merging to main deploys the ETL; web and Worker deploy by hand.** The cron runs whatever
+  is on main, so an ETL change that NULLs or renames a column the live page reads must ship
+  AFTER the web that tolerates it. v4 shipped in that order (web, then Worker, then merge,
+  2026-10-02): the v3 dashboard called `fa_score.toFixed()`, which v4 writes as NULL. The
+  temporary v3 fallbacks in the Worker and web were removed once `signals_daily` was v4.
 - **The plan is personal and the dashboard is public.** `PlanPanel` renders only with
   `SHOW_HOLDING=true` (Vercel env), and the broadcast carries the plan only with
   `PLAN_IN_BROADCAST=true`. Either switch exposes the plan to everyone who can read that surface.
